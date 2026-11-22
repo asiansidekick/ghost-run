@@ -139,3 +139,45 @@ h2 { font-size: 1.1rem; }
 .toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); z-index: 2000; background: #f1f3f7; color: #0f1115; padding: 10px 16px; border-radius: 12px; font-size: 0.92rem; max-width: calc(100% - 32px); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); }
 .leaflet-container { font: inherit; }
 @media (max-width: 380px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+/* animated replay dots with a live speed bubble */
+.dot-wrap { background: none; border: 0; }
+.live-dot { position: relative; width: 26px; height: 26px; }
+.live-dot i { position: absolute; inset: 4px; border-radius: 50%; background: var(--c); border: 3px solid #fff; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5); transition: background 0.2s; }
+.live-dot::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--c); opacity: 0; }
+.live-dot.moving::before, .live-dot.race::before { animation: pulse 1.4s ease-out infinite; }
+@keyframes pulse { 0% { transform: scale(0.6); opacity: 0.7; } 100% { transform: scale(2.4); opacity: 0; } }
+.live-dot.over i { background: var(--red); }
+.live-dot.over::before { background: var(--red); }
+.live-dot.done::before { animation: none; }
+.live-dot b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: #0f1115; font-weight: 800; }
+.live-dot .spd { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -4px); background: #0f1115; color: #fff; border: 2px solid var(--c); border-radius: 8px; padding: 1px 6px; font-size: 13px; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); }
+.live-dot .spd::after { content: " km/h"; font-size: 10px; font-weight: 600; opacity: 0.8; }
+.live-dot.done .spd::after { content: ""; }
+.live-dot.over .spd { background: var(--red); border-color: #fff; }
+
+/* same-route comparison */
+.same-empty { margin: 4px 2px 12px; }
+.cmp-list { list-style: none; margin: 8px 0 12px; padding: 0; }
+.cmp-list li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.cmp-list li.me .cmp-name { font-weight: 700; }
+.cmp-list em { color: var(--muted); font-style: normal; font-weight: 400; font-size: 0.85rem; }
+.cmp-pos { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); display: grid; place-items: center; font-size: 0.8rem; font-weight: 700; color: #0f1115; background: #cbd5e1; }
+.cmp-time { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+.cmp-time small { display: block; color: var(--muted); font-weight: 500; font-size: 0.75rem; }
+#raceBtn { width: 100%; }
+
+/* race replay */
+.race-head { display: flex; align-items: center; gap: 10px; }
+.race-head h1 { margin: 0; }
+.race-wrap { position: relative; margin-top: 10px; }
+.race-map { height: 62vh; }
+.race-hud { position: absolute; left: 8px; top: 8px; z-index: 500; background: rgba(15, 17, 21, 0.86); border: 1px solid var(--border); border-radius: 12px; padding: 6px 8px; min-width: 170px; max-width: calc(100% - 80px); font-size: 0.85rem; pointer-events: none; }
+.hud-row { display: grid; grid-template-columns: 10px 1fr auto auto; gap: 6px; align-items: center; padding: 3px 0; }
+.hud-row i { width: 10px; height: 10px; border-radius: 50%; }
+.hud-row.over .hud-val { color: #fca5a5; }
+.hud-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hud-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.hud-gap { color: var(--muted); font-size: 0.75rem; min-width: 40px; text-align: right; }
+.race-clock { position: absolute; right: 8px; top: 8px; z-index: 500; background: rgba(15, 17, 21, 0.86); border: 1px solid var(--border); border-radius: 10px; padding: 4px 10px; font-weight: 800; font-size: 1.2rem; font-variant-numeric: tabular-nums; pointer-events: none; }
+.live-dot.alt .spd { bottom: auto; top: 100%; transform: translate(-50%, 4px); }

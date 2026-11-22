@@ -7,6 +7,7 @@ import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './sh
 import { directionsFor, googleMapsUrl } from './directions.js';
 import { gpx, csv, saveFile } from './export.js';
 import { sampleDrive } from './sample.js';
+import { compareGroup, positionAt } from './compare.js';
 
 const BANGKOK = [13.7563, 100.5018];
 const $ = (s, el = document) => el.querySelector(s);
@@ -53,6 +54,7 @@ async function route() {
     if (h === '#/record') return recordView();
     if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
     if (h === '#/settings') return settingsView();
+    if (h.startsWith('#/race/')) return await raceFromStore(decodeURIComponent(h.slice(7)));
     return await homeView();
   } catch (e) {
     console.error(e);
@@ -117,7 +119,11 @@ async function homeView() {
     location.hash = '#/drive/' + b.dataset.finish;
   });
   const sb = $('#sample');
-  if (sb) sb.onclick = async () => { await store.putDrive(sampleDrive()); location.hash = '#/drive/sample'; };
+  if (sb) sb.onclick = async () => {
+    await store.putDrive(sampleDrive());
+    await store.putDrive(sampleDrive({ friend: true }));
+    location.hash = '#/drive/sample';
+  };
 }
 
 // ---------- record ----------
@@ -263,6 +269,7 @@ function renderDrive(drive, { own, save }) {
         : `<strong>No stretches over the limit</strong>`}
       <p class="muted small">${esc(limitsNote)}</p>
     </section>
+    <section id="same"></section>
     ${S.gaps ? `<p class="muted small">Recording paused ${S.gaps} time${S.gaps > 1 ? 's' : ''} (page closed or GPS lost). Gaps are shown dashed on the map.</p>` : ''}
 
     <h2 class="section-title">Speed</h2>
@@ -308,7 +315,10 @@ function renderDrive(drive, { own, save }) {
   L.circleMarker([first.la, first.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
   L.circleMarker([last.la, last.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
   map.fitBounds(L.latLngBounds(A.pts.map(p => [p.la, p.lo])), { padding: [24, 24] });
-  const marker = L.circleMarker([first.la, first.lo], { radius: 9, color: '#fff', weight: 3, fillColor: blue, fillOpacity: 1 }).addTo(map);
+  const trail = L.polyline([], { color: '#fff', weight: 3, opacity: 0.85 }).addTo(map);
+  const marker = L.marker([first.la, first.lo], { icon: dotIcon(blue), zIndexOffset: 1000, interactive: false }).addTo(map);
+  const dotEl = () => marker.getElement();
+  const setSpd = v => { const el = dotEl()?.querySelector('.spd'); if (el) el.textContent = Math.round(v); };
 
   // replay + charts
   const cs = $('#cs'), cg = $('#cg'), scrub = $('#scrub'), readout = $('#readout');
@@ -316,8 +326,12 @@ function renderDrive(drive, { own, save }) {
   const setIdx = (i, pan) => {
     idx = Math.max(0, Math.min(A.pts.length - 1, i));
     const p = A.pts[idx];
-    marker.setLatLng([p.la, p.lo]);
-    marker.setStyle({ fillColor: p.over ? red : blue });
+    if (!playing) {
+      marker.setLatLng([p.la, p.lo]);
+      trail.setLatLngs(idx ? A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]) : []);
+    }
+    dotEl()?.classList.toggle('over', !!p.over);
+    if (!playing) setSpd(p.v);
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
     readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${Math.round(p.v)}</b> km/h</span><span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span><span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>`;
@@ -326,21 +340,33 @@ function renderDrive(drive, { own, save }) {
   scrub.oninput = () => { stopPlay(); setIdx(+scrub.value, true); };
   const onChart = c => e => { stopPlay(); setIdx(xToIndex(c, A, e.clientX), true); };
   for (const c of [cs, cg]) { c.addEventListener('pointerdown', onChart(c)); c.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') onChart(c)(e); }); }
-  let playT = null;
-  const stopPlay = () => { clearInterval(playT); playT = null; $('#play').textContent = '▶'; };
+  // replay at 20× real time; the dot glides between GPS fixes and leaves a trail
+  let playing = false, raf = null;
+  const stopPlay = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; dotEl()?.classList.remove('moving'); };
   $('#play').onclick = () => {
-    if (playT) return stopPlay();
-    if (idx >= A.pts.length - 1) idx = 0;
+    if (playing) return stopPlay();
+    if (idx >= A.pts.length - 1) setIdx(0);
+    playing = true;
     $('#play').textContent = '❚❚';
-    // 20× real time
-    let simT = A.pts[idx].t;
-    playT = setInterval(() => {
-      simT += 20 * 100;
+    dotEl()?.classList.add('moving');
+    let simT = A.pts[idx].t, lastFrame = performance.now();
+    const trailPts = A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]);
+    const frameFn = now => {
+      if (!playing) return;
+      simT += (now - lastFrame) * 20; lastFrame = now;
       let j = idx;
-      while (j < A.pts.length - 1 && A.pts[j + 1].t <= simT) j++;
-      setIdx(j, true);
-      if (j >= A.pts.length - 1) stopPlay();
-    }, 100);
+      while (j < A.pts.length - 1 && A.pts[j + 1].t <= simT) { j++; trailPts.push([A.pts[j].la, A.pts[j].lo]); }
+      const a = A.pts[j], b = A.pts[Math.min(j + 1, A.pts.length - 1)];
+      const f = b.t > a.t && !b.gapBefore ? Math.min(1, (simT - a.t) / (b.t - a.t)) : 0;
+      const ll = [a.la + f * (b.la - a.la), a.lo + f * (b.lo - a.lo)];
+      marker.setLatLng(ll);
+      setSpd(a.v + f * (b.v - a.v));
+      trail.setLatLngs([...trailPts, ll]);
+      if (j !== idx) setIdx(j, true);
+      if (j >= A.pts.length - 1) { stopPlay(); return; }
+      raf = requestAnimationFrame(frameFn);
+    };
+    raf = requestAnimationFrame(frameFn);
   };
   view.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { stopPlay(); setIdx(+b.dataset.jump, true); $('#map').scrollIntoView({ behavior: 'smooth' }); });
   setIdx(0);
@@ -364,7 +390,7 @@ function renderDrive(drive, { own, save }) {
   $('#csv').onclick = () => saveFile(csv(drive, A), fname + '.csv', 'text/csv');
   if ($('#saveCopy')) $('#saveCopy').onclick = async () => {
     const id = 'd' + Date.now().toString(36);
-    await store.putDrive({ id, status: 'done', name: driveTitle(drive) + (drive.from ? ` (from ${drive.from})` : ''), startedAt: drive.startedAt, endedAt: drive.endedAt, points: drive.points, limits: drive.limits, summary: S });
+    await store.putDrive({ id, status: 'done', from: drive.from || 'Friend', name: driveTitle(drive) + (drive.from ? ` (from ${drive.from})` : ''), startedAt: drive.startedAt, endedAt: drive.endedAt, points: drive.points, limits: drive.limits, summary: S });
     toast('Saved to your drives.');
     location.hash = '#/drive/' + id;
   };
@@ -384,6 +410,144 @@ function renderDrive(drive, { own, save }) {
     };
   }
   cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); map.remove(); };
+
+  // other drives on the same route: yours, and friends' drives you've saved
+  store.allDrives().then(all => {
+    const others = all.filter(d => d.status === 'done' && d.id !== drive.id && !!d.sample === !!drive.sample);
+    const group = compareGroup(drive, others, me);
+    const box = $('#same');
+    if (!box) return;
+    if (!group) {
+      box.innerHTML = `<p class="muted small same-empty">No other drives on this route yet. Share the route with a friend; when they drive it and send you their drive, save it and you can race the two here.</p>`;
+      return;
+    }
+    renderCompareList(box, group, () => renderRace(group));
+  });
+}
+
+function dotIcon(color) {
+  return L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot" style="--c:${color}"><i></i><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+}
+
+const RACE_COLORS = ['#3b82f6', '#f472b6', '#facc15', '#22d3ee', '#a78bfa', '#fb923c'];
+
+function renderCompareList(box, group, onRace) {
+  const best = group.entries[0].ms;
+  box.innerHTML = `
+    <h2 class="section-title">Same route</h2>
+    <section class="card">
+      <p class="small muted">Times over the ${fmtKm(group.stretchM)} stretch every drive below covers, fastest first. A red mark means part of that time was over the limit.</p>
+      <ol class="cmp-list">${group.entries.map((e, k) => `
+        <li class="${e.isRef ? 'me' : ''}">
+          <span class="cmp-pos">${k + 1}</span>
+          <span class="cmp-name">${esc(e.label)}${e.isRef ? ' <em>(this drive)</em>' : ''}</span>
+          <span class="cmp-time">${fmtClock(e.ms)}${k ? `<small>+${fmtClock(e.ms - best)}</small>` : ''}</span>
+          <span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span>
+        </li>`).join('')}</ol>
+      <button class="btn" id="raceBtn">▶ Race replay</button>
+    </section>`;
+  $('#raceBtn', box).onclick = onRace;
+}
+
+async function raceFromStore(id) {
+  view.innerHTML = `<p class="loading">Lining up drives…</p>`;
+  const all = await store.allDrives();
+  const ref = all.find(d => d.id === id);
+  const group = ref && compareGroup(ref, all.filter(d => d.status === 'done' && d.id !== id && !!d.sample === !!ref.sample), store.settings().name);
+  if (!group) { view.innerHTML = `<section class="card"><p>No other drives on this route to race against.</p><a class="btn" href="#/">My drives</a></section>`; return; }
+  renderRace(group, true);
+}
+
+// ---------- race replay: a moving dot per driver over the shared stretch ----------
+function renderRace(group, fromHash) {
+  if (!fromHash && cleanup) { try { cleanup(); } catch {} cleanup = null; }
+  const entries = group.entries.slice(0, RACE_COLORS.length);
+  entries.forEach((e, k) => { e.color = RACE_COLORS[k]; });
+  const maxMs = Math.max(...entries.map(e => e.ms));
+  const refId = entries.find(e => e.isRef)?.drive.id;
+  window.scrollTo(0, 0);
+  view.innerHTML = `
+    <div class="race-head">
+      <button class="btn small ghost" id="back">‹ Back</button>
+      <h1>Race replay</h1>
+    </div>
+    <div class="race-wrap">
+      <div class="map race-map" id="map"></div>
+      <div class="race-hud" id="hud"></div>
+      <div class="race-clock" id="clock">0:00</div>
+    </div>
+    <div class="replay">
+      <button class="btn small" id="play" aria-label="Play">▶</button>
+      <input type="range" id="scrub" min="0" max="${maxMs}" value="0" step="250" aria-label="Race position">
+      <button class="btn small ghost" id="speed">20×</button>
+    </div>
+    <p class="muted small">Everyone starts together at the start of the shared stretch (${fmtKm(group.stretchM)}). Drives were made at different times, so traffic and lights differ.</p>
+    <section class="card"><ol class="cmp-list">${entries.map((e, k) => `
+      <li><span class="cmp-pos" style="background:${e.color}">${k + 1}</span><span class="cmp-name">${esc(e.label)}</span>
+      <span class="cmp-time">${fmtClock(e.ms)}</span><span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span></li>`).join('')}</ol></section>`;
+  $('#back').onclick = () => { if (fromHash || !refId) history.back(); else route(); };
+  const map = newMap($('#map'));
+  const refE = entries.find(e => e.isRef) || entries[0];
+  const stretch = refE.A.pts.slice(refE.i0, refE.i1 + 1).map(p => [p.la, p.lo]);
+  L.polyline(stretch, { color: '#94a3b8', weight: 8, opacity: 0.35 }).addTo(map);
+  map.fitBounds(L.latLngBounds(stretch), { padding: [30, 30] });
+  const dots = entries.map((e, k) => {
+    const trail = L.polyline([], { color: e.color, weight: 4, opacity: 0.9 }).addTo(map);
+    const m = L.marker([e.A.pts[e.i0].la, e.A.pts[e.i0].lo], { icon: L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot race${k % 2 ? " alt" : ""}" style="--c:${e.color}"><i></i><b>${k + 1}</b><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000 - k, interactive: false }).addTo(map);
+    return { e, trail, m };
+  });
+  let t = 0, playing = false, raf = null, rate = 20;
+  const draw = () => {
+    $('#clock').textContent = fmtClock(t);
+    $('#scrub').value = t;
+    const rows = dots.map(({ e, trail, m }) => {
+      const p = positionAt(e, t);
+      m.setLatLng([p.la, p.lo]);
+      const el = m.getElement();
+      el?.classList.toggle('over', !!p.over && !p.done);
+      el?.classList.toggle('done', p.done);
+      const sp = el?.querySelector('.spd');
+      if (sp) sp.textContent = p.done ? '🏁' : Math.round(p.v);
+      const P = e.A.pts, end = Math.min(e.i1, e.i0 + Math.max(0, upperIdx(P, e.i0, e.i1, P[e.i0].t + t)));
+      trail.setLatLngs([...P.slice(e.i0, end + 1).map(q => [q.la, q.lo]), [p.la, p.lo]]);
+      return { e, p };
+    });
+    rows.sort((a, b) => (b.p.done - a.p.done) || (a.p.done ? a.e.ms - b.e.ms : b.p.prog - a.p.prog));
+    const lead = rows[0];
+    $('#hud').innerHTML = rows.map(({ e, p }, k) => `
+      <div class="hud-row ${p.over && !p.done ? 'over' : ''}">
+        <i style="background:${e.color}"></i>
+        <span class="hud-name">${esc(e.label.split(',')[0])}</span>
+        <span class="hud-val">${p.done ? `🏁 ${fmtClock(e.ms)}` : `${Math.round(p.v)} km/h`}</span>
+        <span class="hud-gap">${k === 0 ? 'lead' : p.done ? '' : `−${fmtKm(Math.max(0, lead.p.prog - p.prog))}`}</span>
+      </div>`).join('');
+  };
+  const stop = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; };
+  $('#play').onclick = () => {
+    if (playing) return stop();
+    if (t >= maxMs) t = 0;
+    playing = true; $('#play').textContent = '❚❚';
+    let last = performance.now();
+    const frameFn = now => {
+      if (!playing) return;
+      t = Math.min(maxMs, t + (now - last) * rate); last = now;
+      draw();
+      if (t >= maxMs) { stop(); return; }
+      raf = requestAnimationFrame(frameFn);
+    };
+    raf = requestAnimationFrame(frameFn);
+  };
+  $('#scrub').oninput = e => { stop(); t = +e.target.value; draw(); };
+  $('#speed').onclick = e => { rate = rate === 20 ? 60 : rate === 60 ? 5 : 20; e.target.textContent = rate + '×'; };
+  draw();
+  cleanup = () => { stop(); map.remove(); };
+}
+
+function upperIdx(P, lo, hi, t) {
+  // number of fixes after lo with time <= t
+  let a = lo, b = hi;
+  while (a < b) { const mid = (a + b + 1) >> 1; if (P[mid].t <= t) a = mid; else b = mid - 1; }
+  return a - lo;
 }
 
 // ---------- shared route with directions ----------

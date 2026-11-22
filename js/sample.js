@@ -7,7 +7,7 @@ const PATH = [
   [13.71520, 100.59160], [13.71240, 100.59520], [13.70880, 100.59860], [13.70560, 100.60110],
 ];
 
-export function sampleDrive() {
+export function sampleDrive({ friend = false } = {}) {
   const cum = [0];
   for (let i = 1; i < PATH.length; i++) cum.push(cum[i - 1] + hav(...PATH[i - 1], ...PATH[i]));
   const total = cum[cum.length - 1];
@@ -17,16 +17,21 @@ export function sampleDrive() {
     return [PATH[k - 1][0] + f * (PATH[k][0] - PATH[k - 1][0]), PATH[k - 1][1] + f * (PATH[k][1] - PATH[k - 1][1])];
   };
   // stops (distance m, wait s, braking m/s²) and target speeds (km/h) for the stretch before each stop
-  const stops = [
+  const stops = friend ? [
+    { d: 1050, wait: 20, brake: 2.0, target: 55, accel: 1.6 },
+    { d: 2500, wait: 70, brake: 2.2, target: 68, accel: 1.5 },
+    { d: 4700, wait: 15, brake: 2.0, target: 78, accel: 1.8 },   // a calm, legal run
+    { d: total, wait: 0, brake: 2.0, target: 55, accel: 1.6 },
+  ] : [
     { d: 1050, wait: 35, brake: 2.4, target: 48, accel: 1.8 },
     { d: 2500, wait: 50, brake: 4.6, target: 62, accel: 1.6 },   // one hard stop
     { d: 4700, wait: 25, brake: 2.2, target: 91, accel: 3.4 },   // quick getaway, over 80 for a while
     { d: total, wait: 0, brake: 2.0, target: 50, accel: 1.6 },
   ];
-  const t0 = Date.now() - 3600 * 1000;
+  const t0 = Date.now() - (friend ? 26 : 1) * 3600 * 1000;
   const pts = [];
   let s = 0, v = 0, t = t0, k = 0, waiting = 0, braking = false;
-  let seed = 7;
+  let seed = friend ? 11 : 7;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
   while (k < stops.length && pts.length < 3000) {
     const st = stops[k];
@@ -45,5 +50,6 @@ export function sampleDrive() {
     t += 1000;
     if (k === stops.length - 1 && s >= total - 1) break;
   }
+  if (friend) return { id: 'sample-friend', status: 'done', from: 'Sample friend', name: 'Sample friend: Sukhumvit, Asok to On Nut', startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts, sample: true };
   return { id: 'sample', status: 'done', name: 'Sample: Sukhumvit, Asok to On Nut', startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts, sample: true };
 }
