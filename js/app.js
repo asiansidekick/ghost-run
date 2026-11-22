@@ -1,0 +1,467 @@
+import * as store from './store.js';
+import { Recorder, finishDrive } from './recorder.js';
+import { analyse } from './analysis.js';
+import { computeLimits, TH_DEFAULTS } from './limits.js';
+import { speedChart, gChart, xToIndex } from './charts.js';
+import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './share.js';
+import { directionsFor, googleMapsUrl } from './directions.js';
+import { gpx, csv, saveFile } from './export.js';
+import { sampleDrive } from './sample.js';
+
+const BANGKOK = [13.7563, 100.5018];
+const $ = (s, el = document) => el.querySelector(s);
+const view = $('#view');
+const recorder = new Recorder();
+let cleanup = null;
+
+// ---------- helpers ----------
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtKm = m => m >= 10000 ? (m / 1000).toFixed(0) + ' km' : m >= 1000 ? (m / 1000).toFixed(1) + ' km' : Math.round(m) + ' m';
+function fmtDur(ms) {
+  const m = Math.round(ms / 60000);
+  if (ms < 60000) return Math.round(ms / 1000) + ' s';
+  return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`;
+}
+const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const fmtDate = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const driveTitle = d => d.name || `Drive, ${fmtDate(d.startedAt)}`;
+
+function toast(msg, ms = 2600) {
+  const el = $('#toast');
+  el.textContent = msg; el.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, ms);
+}
+
+function newMap(el, opts = {}) {
+  const map = L.map(el, { zoomControl: false, attributionControl: true, ...opts }).setView(BANGKOK, 12);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  return map;
+}
+
+// ---------- router ----------
+async function route() {
+  if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+  window.scrollTo(0, 0);
+  const h = location.hash;
+  try {
+    if (h.startsWith('#s=') || h.startsWith('#r=')) return await sharedView(h.slice(3));
+    if (h === '#/record') return recordView();
+    if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
+    if (h === '#/settings') return settingsView();
+    return await homeView();
+  } catch (e) {
+    console.error(e);
+    view.innerHTML = `<section class="card"><h2>Something went wrong</h2><p class="muted">${esc(e.message)}</p><a class="btn" href="#/">Back to my drives</a></section>`;
+  }
+}
+window.addEventListener('hashchange', route);
+
+// recording pill in the top bar, visible on every screen while a drive is being logged
+const pill = document.createElement('a');
+pill.className = 'rec-pill'; pill.href = '#/record'; pill.hidden = true;
+$('.topbar').insertBefore(pill, $('.topbar-link'));
+recorder.addEventListener('update', () => {
+  pill.hidden = !recorder.active || location.hash === '#/record';
+  if (recorder.active) pill.textContent = `● ${Math.round(recorder.speedKmh)} km/h`;
+});
+recorder.addEventListener('autostop', async () => {
+  const id = await recorder.stop();
+  toast('Parked for a while, so the drive was stopped and saved.', 4000);
+  if (id) location.hash = '#/drive/' + id;
+});
+
+// ---------- home ----------
+async function homeView() {
+  const drives = (await store.allDrives()).sort((a, b) => b.startedAt - a.startedAt);
+  const interrupted = drives.filter(d => d.status === 'recording' && d.id !== recorder.id);
+  const done = drives.filter(d => d.status === 'done');
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  view.innerHTML = `
+    ${interrupted.map(d => `
+      <section class="card warn-card">
+        <strong>A drive was interrupted</strong>
+        <p class="muted">Started ${esc(fmtDate(d.startedAt))}. The page closed while recording; everything up to then is saved.</p>
+        <div class="row">
+          <button class="btn" data-resume="${esc(d.id)}">Continue recording</button>
+          <button class="btn ghost" data-finish="${esc(d.id)}">Finish it</button>
+        </div>
+      </section>`).join('')}
+    <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start a drive'}</a>
+    ${!standalone ? `<p class="hint">Tip: add Street Legal to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
+    <h2 class="section-title">My drives</h2>
+    ${done.length ? `<ul class="drive-list">${done.map(d => {
+      const A = d.summary || {};
+      return `<li><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
+        <div class="drive-name">${esc(driveTitle(d))}</div>
+        <div class="drive-meta">${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
+        ${A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
+      </a></li>`;
+    }).join('')}</ul>` : `
+      <section class="card empty">
+        <p>No drives yet. Mount your phone, tap <strong>Start a drive</strong>, and tap Stop once you're parked.</p>
+        <button class="btn ghost" id="sample">Show me a sample drive</button>
+      </section>`}
+  `;
+  view.querySelectorAll('[data-resume]').forEach(b => b.onclick = () => {
+    recorder.start(b.dataset.resume);
+    location.hash = '#/record';
+  });
+  view.querySelectorAll('[data-finish]').forEach(b => b.onclick = async () => {
+    const d = await finishDrive(b.dataset.finish);
+    if (d && d.points.length < 2) { await store.deleteDrive(d.id); route(); return; }
+    location.hash = '#/drive/' + b.dataset.finish;
+  });
+  const sb = $('#sample');
+  if (sb) sb.onclick = async () => { await store.putDrive(sampleDrive()); location.hash = '#/drive/sample'; };
+}
+
+// ---------- record ----------
+function recordView() {
+  if (!recorder.active) {
+    view.innerHTML = `
+      <section class="card">
+        <h1>Before you set off</h1>
+        <ol class="steps">
+          <li>Put the phone in a fixed cradle, ideally plugged in to charge.</li>
+          <li>Tap Start while you're parked. Allow location and motion access if asked.</li>
+          <li>Leave this page open on screen while you drive. The screen stays on by itself.</li>
+          <li>Once parked, hold Stop. If you forget, it stops on its own after ${store.settings().autoStopMin} minutes parked.</li>
+        </ol>
+        <p class="muted small">Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map.</p>
+      </section>
+      <button class="btn big start" id="go">Start</button>`;
+    $('#go').onclick = () => { recorder.start(); recordView(); };
+    return;
+  }
+  view.innerHTML = `
+    <section class="live">
+      <div class="live-status" id="ls">Waiting for GPS…</div>
+      <div class="live-speed"><span id="lv">0</span><small>km/h</small></div>
+      <div class="live-grid">
+        <div><span id="lt">0:00</span><small>time</small></div>
+        <div><span id="ld">0 m</span><small>distance</small></div>
+        <div><span id="la">–</span><small>GPS accuracy</small></div>
+      </div>
+      <div class="live-flags" id="lf"></div>
+      <button class="btn big hold" id="stop"><span class="hold-fill"></span><span class="hold-label">Hold to stop</span></button>
+    </section>`;
+  const upd = () => {
+    if (!recorder.active) return;
+    $('#lv').textContent = Math.round(recorder.speedKmh);
+    $('#ld').textContent = fmtKm(recorder.distance);
+    $('#la').textContent = recorder.accuracy != null ? `±${Math.round(recorder.accuracy)} m` : '–';
+    $('#ls').textContent = recorder.error || (recorder.count ? 'Recording' : 'Waiting for GPS…');
+    $('#ls').className = 'live-status ' + (recorder.error ? 'bad' : recorder.count ? 'ok' : '');
+    $('#lf').innerHTML = [
+      recorder.wakeLock ? 'Screen kept on' : 'Screen may sleep: keep this page open',
+      recorder.motionOk ? 'Motion sensor on' : 'Using GPS for braking',
+    ].map(t => `<span>${t}</span>`).join('');
+  };
+  const tick = setInterval(() => { if (recorder.startedAt) $('#lt').textContent = fmtClock(Date.now() - recorder.startedAt); }, 1000);
+  recorder.addEventListener('update', upd);
+  upd();
+  // hold-to-stop so a brush against the screen doesn't end the drive
+  const btn = $('#stop');
+  let holdT = null;
+  const cancel = () => { clearTimeout(holdT); btn.classList.remove('holding'); };
+  btn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    btn.classList.add('holding');
+    holdT = setTimeout(async () => {
+      btn.classList.remove('holding');
+      btn.disabled = true; $('.hold-label').textContent = 'Saving…';
+      const id = await recorder.stop();
+      location.hash = '#/drive/' + id;
+    }, 1000);
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+  cleanup = () => { clearInterval(tick); recorder.removeEventListener('update', upd); };
+}
+
+// ---------- drive page ----------
+async function ensureLimits(drive, save) {
+  if (drive.limits && drive.limits.v && drive.limits.v.length === drive.points.length) return;
+  drive.limits = await computeLimits(drive.points);
+  if (save) await save();
+}
+
+async function ownDriveView(id) {
+  view.innerHTML = `<p class="loading">Loading drive…</p>`;
+  const drive = await store.getDrive(id);
+  if (!drive) { view.innerHTML = `<section class="card"><p>That drive isn't on this phone.</p><a class="btn" href="#/">My drives</a></section>`; return; }
+  if (drive.status === 'recording') { location.hash = recorder.id === id ? '#/record' : '#/'; return; }
+  if (!drive.points || drive.points.length < 2) {
+    view.innerHTML = `<section class="card"><h2>Too short to show</h2><p class="muted">This drive has fewer than two GPS readings. GPS may not have locked on.</p><button class="btn ghost" id="del">Delete it</button></section>`;
+    $('#del').onclick = async () => { await store.deleteDrive(id); location.hash = '#/'; };
+    return;
+  }
+  const save = async () => { drive.summary = analyse(drive.points, drive.limits).summary; await store.putDrive(drive); };
+  if (!drive.limits) {
+    view.innerHTML = `<p class="loading">Checking speed limits along your route…</p>`;
+    await ensureLimits(drive, save);
+  } else if (!drive.summary) await save();
+  renderDrive(drive, { own: true, save });
+}
+
+async function sharedView(payload) {
+  view.innerHTML = `<p class="loading">Opening shared link…</p>`;
+  let obj;
+  try { obj = await unpack(payload); }
+  catch { view.innerHTML = `<section class="card"><h2>This link looks broken</h2><p class="muted">It may have been cut short when it was sent. Ask your friend to share it again.</p><a class="btn" href="#/">My drives</a></section>`; return; }
+  const d = toDrive(obj);
+  if (d.kind === 'route') return renderRoute(d);
+  if (!d.limits) await ensureLimits(d);
+  renderDrive(d, { own: false });
+}
+
+function stars(n) { return '●'.repeat(n) + '○'.repeat(5 - n); }
+
+function renderDrive(drive, { own, save }) {
+  const A = analyse(drive.points, drive.limits);
+  const S = A.summary;
+  const lim = drive.limits || {};
+  const limitsNote = lim.status === 'defaults'
+    ? 'Couldn’t reach OpenStreetMap, so every limit here is a Thai default (80 km/h in greater Bangkok, 90 outside).'
+    : `About ${Math.round(S.osmShare * 100)}% of this route has a posted limit in OpenStreetMap; the rest uses Thai defaults (80 km/h in greater Bangkok, 90 outside). Limits are approximate.`;
+  view.innerHTML = `
+    ${!own ? `<section class="card banner">Shared drive${drive.from ? ` from <strong>${esc(drive.from)}</strong>` : ''}. The first and last few hundred metres may be hidden for privacy.</section>` : ''}
+    <div class="title-row">
+      ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Drive name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
+    </div>
+    <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
+    <div class="map" id="map"></div>
+    <div class="replay">
+      <button class="btn small" id="play" aria-label="Play replay">▶</button>
+      <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
+    </div>
+    <div class="readout" id="readout"></div>
+    <div class="legend"><span><i class="sw blue"></i>Under the limit</span><span><i class="sw red"></i>Over the limit</span><span><i class="sw gap"></i>Recording gap</span><span><i class="dot orange"></i>Hard braking or acceleration</span></div>
+
+    <section class="stats">
+      <div><b>${fmtKm(S.distance)}</b><small>distance</small></div>
+      <div><b>${fmtDur(S.durationMs)}</b><small>total time</small></div>
+      <div><b>${fmtDur(S.movingMs)}</b><small>moving time</small></div>
+      <div><b>${Math.round(S.avgKmh)}</b><small>avg km/h moving</small></div>
+      <div><b>${Math.round(S.maxKmh)}</b><small>top km/h</small></div>
+      <div><b>${S.stops}</b><small>stops</small></div>
+      <div><b>${S.harshBrake}</b><small>hard braking</small></div>
+      <div><b>${S.harshAccel}</b><small>hard acceleration</small></div>
+      <div><b class="stars">${stars(S.smoothness)}</b><small>smoothness</small></div>
+    </section>
+
+    <section class="card ${S.speedingCount ? 'red-card' : 'green-card'}">
+      ${S.speedingCount
+        ? `<strong>${S.speedingCount} stretch${S.speedingCount > 1 ? 'es' : ''} over the limit</strong>
+           <p class="small">${fmtKm(S.speedingDist)} in total, ${fmtDur(S.speedingMs)}, up to ${Math.round(S.maxOver)} km/h over.</p>
+           <ul class="over-list">${A.speeding.map((x, k) => `<li><button class="linkish" data-jump="${x.i0}">${fmtTime(A.pts[x.i0].t)}</button> · ${fmtKm(x.dist)} where the limit is ${x.limit}, up to ${Math.round(x.limit + x.maxOver)} km/h</li>`).join('')}</ul>`
+        : `<strong>No stretches over the limit</strong>`}
+      <p class="muted small">${esc(limitsNote)}</p>
+    </section>
+    ${S.gaps ? `<p class="muted small">Recording paused ${S.gaps} time${S.gaps > 1 ? 's' : ''} (page closed or GPS lost). Gaps are shown dashed on the map.</p>` : ''}
+
+    <h2 class="section-title">Speed</h2>
+    <canvas class="chart" id="cs"></canvas>
+    <p class="muted small chart-key"><i class="sw blue"></i> speed <i class="sw red"></i> over the limit <i class="sw limit"></i> speed limit</p>
+    <h2 class="section-title">Acceleration and braking (g)</h2>
+    <canvas class="chart" id="cg"></canvas>
+    <p class="muted small chart-key">Above the line is speeding up, below is braking. Dotted lines mark hard acceleration (0.30 g) and hard braking (0.35 g).</p>
+
+    <section class="actions">
+      <button class="btn" id="shareDrive">Share this drive</button>
+      <button class="btn ghost" id="shareRoute">Share just the route</button>
+      ${!own ? `<button class="btn ghost" id="saveCopy">Save to my drives</button>` : ''}
+      <button class="btn ghost" id="gpx">Export GPX</button>
+      <button class="btn ghost" id="csv">Export CSV</button>
+      ${own ? `<button class="btn ghost" id="recheck">Recheck speed limits</button><button class="btn danger" id="delete">Delete drive</button>` : ''}
+    </section>
+  `;
+
+  // map
+  const map = newMap($('#map'));
+  const blue = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  const red = getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+  let run = [A.pts[0]], runOver = A.pts[0].over;
+  const flush = () => { if (run.length > 1) L.polyline(run.map(p => [p.la, p.lo]), { color: runOver ? red : blue, weight: runOver ? 6 : 5, opacity: 0.95 }).addTo(map); };
+  for (let i = 1; i < A.pts.length; i++) {
+    const p = A.pts[i];
+    if (p.gapBefore) {
+      flush();
+      L.polyline([[A.pts[i - 1].la, A.pts[i - 1].lo], [p.la, p.lo]], { color: '#888', weight: 3, dashArray: '6 8' }).addTo(map);
+      run = [p]; runOver = p.over; continue;
+    }
+    if (p.over !== runOver) { run.push(p); flush(); run = [p]; runOver = p.over; }
+    else run.push(p);
+  }
+  flush();
+  for (const e of A.events) {
+    const p = A.pts[e.i];
+    L.circleMarker([p.la, p.lo], { radius: 6, color: '#fff', weight: 2, fillColor: '#f59e0b', fillOpacity: 1 })
+      .bindPopup(`${e.type === 'brake' ? 'Hard braking' : 'Hard acceleration'}, ${Math.abs(e.g).toFixed(2)} g<br>${fmtTime(p.t)}`).addTo(map);
+  }
+  const first = A.pts[0], last = A.pts[A.pts.length - 1];
+  L.circleMarker([first.la, first.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
+  L.circleMarker([last.la, last.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
+  map.fitBounds(L.latLngBounds(A.pts.map(p => [p.la, p.lo])), { padding: [24, 24] });
+  const marker = L.circleMarker([first.la, first.lo], { radius: 9, color: '#fff', weight: 3, fillColor: blue, fillOpacity: 1 }).addTo(map);
+
+  // replay + charts
+  const cs = $('#cs'), cg = $('#cg'), scrub = $('#scrub'), readout = $('#readout');
+  let idx = 0;
+  const setIdx = (i, pan) => {
+    idx = Math.max(0, Math.min(A.pts.length - 1, i));
+    const p = A.pts[idx];
+    marker.setLatLng([p.la, p.lo]);
+    marker.setStyle({ fillColor: p.over ? red : blue });
+    if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
+    scrub.value = idx;
+    readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${Math.round(p.v)}</b> km/h</span><span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span><span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>`;
+    speedChart(cs, A, idx); gChart(cg, A, idx);
+  };
+  scrub.oninput = () => { stopPlay(); setIdx(+scrub.value, true); };
+  const onChart = c => e => { stopPlay(); setIdx(xToIndex(c, A, e.clientX), true); };
+  for (const c of [cs, cg]) { c.addEventListener('pointerdown', onChart(c)); c.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') onChart(c)(e); }); }
+  let playT = null;
+  const stopPlay = () => { clearInterval(playT); playT = null; $('#play').textContent = '▶'; };
+  $('#play').onclick = () => {
+    if (playT) return stopPlay();
+    if (idx >= A.pts.length - 1) idx = 0;
+    $('#play').textContent = '❚❚';
+    // 20× real time
+    let simT = A.pts[idx].t;
+    playT = setInterval(() => {
+      simT += 20 * 100;
+      let j = idx;
+      while (j < A.pts.length - 1 && A.pts[j + 1].t <= simT) j++;
+      setIdx(j, true);
+      if (j >= A.pts.length - 1) stopPlay();
+    }, 100);
+  };
+  view.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { stopPlay(); setIdx(+b.dataset.jump, true); $('#map').scrollIntoView({ behavior: 'smooth' }); });
+  setIdx(0);
+  const onResize = () => { speedChart(cs, A, idx); gChart(cg, A, idx); };
+  window.addEventListener('resize', onResize);
+
+  // actions
+  const me = store.settings().name;
+  $('#shareDrive').onclick = async () => {
+    const payload = await packDrive(drive, { trim: own && store.settings().trimShare, from: own ? me : drive.from });
+    const r = await shareLink(shareUrl('s', payload), driveTitle(drive), `${driveTitle(drive)}: ${fmtKm(S.distance)} on Street Legal`);
+    if (r === 'copied') toast('Link copied. Paste it to a friend.');
+  };
+  $('#shareRoute').onclick = async () => {
+    const payload = await packRoute(drive.points, { name: driveTitle(drive), from: own ? me : drive.from, trim: own && store.settings().trimShare });
+    const r = await shareLink(shareUrl('r', payload), 'Route: ' + driveTitle(drive), `A route to drive: ${driveTitle(drive)}`);
+    if (r === 'copied') toast('Route link copied. Your friend gets a map and directions.');
+  };
+  const fname = (driveTitle(drive).replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'drive').slice(0, 60);
+  $('#gpx').onclick = () => saveFile(gpx(drive, A), fname + '.gpx', 'application/gpx+xml');
+  $('#csv').onclick = () => saveFile(csv(drive, A), fname + '.csv', 'text/csv');
+  if ($('#saveCopy')) $('#saveCopy').onclick = async () => {
+    const id = 'd' + Date.now().toString(36);
+    await store.putDrive({ id, status: 'done', name: driveTitle(drive) + (drive.from ? ` (from ${drive.from})` : ''), startedAt: drive.startedAt, endedAt: drive.endedAt, points: drive.points, limits: drive.limits, summary: S });
+    toast('Saved to your drives.');
+    location.hash = '#/drive/' + id;
+  };
+  if (own) {
+    $('#name').onchange = async e => { drive.name = e.target.value.trim(); await store.putDrive(drive); toast('Name saved.'); };
+    $('#recheck').onclick = async e => {
+      e.target.disabled = true; e.target.textContent = 'Checking…';
+      drive.limits = await computeLimits(drive.points);
+      await save();
+      toast(drive.limits.status === 'osm' ? 'Speed limits updated from OpenStreetMap.' : 'Couldn’t reach OpenStreetMap. Using Thai defaults.');
+      route();
+    };
+    $('#delete').onclick = async () => {
+      if (!confirm('Delete this drive from this phone? Links you already shared keep working.')) return;
+      await store.deleteDrive(drive.id);
+      location.hash = '#/';
+    };
+  }
+  cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); map.remove(); };
+}
+
+// ---------- shared route with directions ----------
+function renderRoute(r) {
+  const pts = r.points;
+  view.innerHTML = `
+    <section class="card banner">Route${r.from ? ` from <strong>${esc(r.from)}</strong>` : ''}. Check the way before you set off; don't read directions while driving.</section>
+    <h1>${esc(r.name || 'Shared route')}</h1>
+    <div class="map" id="map"></div>
+    <section class="actions">
+      <a class="btn" href="${esc(googleMapsUrl(pts))}" target="_blank" rel="noopener">Open in Google Maps</a>
+      <a class="btn ghost" href="#/record">Log my own drive</a>
+    </section>
+    <p class="muted small">Google Maps only takes a few stops along the way, so its route may differ a little from this one.</p>
+    <h2 class="section-title">Directions</h2>
+    <ol class="directions" id="dir"><li class="muted">Working out directions…</li></ol>`;
+  const map = newMap($('#map'));
+  const line = L.polyline(pts.map(p => [p.la, p.lo]), { color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), weight: 5 }).addTo(map);
+  L.circleMarker([pts[0].la, pts[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
+  L.circleMarker([pts[pts.length - 1].la, pts[pts.length - 1].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
+  map.fitBounds(line.getBounds(), { padding: [24, 24] });
+  let stepMarker = null;
+  let total = 0;
+  directionsFor(pts).then(steps => {
+    $('#dir').innerHTML = steps.map((s, k) => {
+      const at = total; total += s.distance;
+      return `<li data-k="${k}"><span class="dir-text">${esc(s.text)}</span><span class="dir-dist">${s.type === 'arrive' ? fmtKm(at) + ' total' : 'then ' + fmtKm(s.distance)}</span></li>`;
+    }).join('');
+    $('#dir').querySelectorAll('li').forEach(li => li.onclick = () => {
+      const s = steps[+li.dataset.k];
+      if (!s.loc) return;
+      const ll = [s.loc[1], s.loc[0]];
+      if (stepMarker) stepMarker.remove();
+      stepMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#f59e0b', fillOpacity: 1 }).addTo(map);
+      map.setView(ll, 17);
+      $('#map').scrollIntoView({ behavior: 'smooth' });
+    });
+  }).catch(e => {
+    console.warn(e);
+    $('#dir').innerHTML = `<li class="muted">Couldn't get directions right now (${esc(e.message)}). The map above and Google Maps still work.</li>`;
+  });
+  cleanup = () => map.remove();
+}
+
+// ---------- settings ----------
+function settingsView() {
+  const s = store.settings();
+  view.innerHTML = `
+    <h1>Settings</h1>
+    <section class="card form">
+      <label>Your name on shared links<input id="sname" value="${esc(s.name)}" placeholder="e.g. Phil"></label>
+      <label class="check"><input type="checkbox" id="strim" ${s.trimShare ? 'checked' : ''}> Hide the first and last 200 m when sharing, so friends can't see where you live</label>
+      <label>Stop recording after parked for
+        <select id="sauto">${[3, 5, 10, 15].map(m => `<option value="${m}" ${m === s.autoStopMin ? 'selected' : ''}>${m} minutes</option>`).join('')}</select>
+      </label>
+    </section>
+    <h2 class="section-title">Speed limits</h2>
+    <section class="card">
+      <p class="small">Where a road has a posted limit in OpenStreetMap, that's used. Elsewhere Street Legal falls back to Thai defaults:</p>
+      <table class="tbl">${TH_DEFAULTS.map(d => `<tr><td>${esc(d.label)}</td><td>${d.kmh} km/h</td></tr>`).join('')}</table>
+      <p class="muted small">A stretch shows red only when you were more than 2 km/h over for at least 2 seconds, to allow for GPS error. Treat it as a guide: the signs on the road are what count.</p>
+    </section>
+    <h2 class="section-title">Your data</h2>
+    <section class="card">
+      <p class="small">Drives are stored only on this phone. Sharing puts a copy of that one drive inside the link itself; there's no server and no account.</p>
+      <button class="btn danger" id="wipe">Delete all my drives</button>
+    </section>
+    <p class="muted small">Maps and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM.</p>`;
+  const persist = () => store.saveSettings({ name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value });
+  ['#sname', '#strim', '#sauto'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
+  $('#wipe').onclick = async () => {
+    if (!confirm('Delete every drive on this phone? This can’t be undone.')) return;
+    await store.wipe(); toast('All drives deleted.'); location.hash = '#/';
+  };
+}
+
+// ---------- start ----------
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+route();
