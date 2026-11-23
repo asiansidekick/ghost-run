@@ -17,7 +17,7 @@ import { open3D } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 4:00 AM';
+export const APP_VERSION = '24 Nov 2026, 4:30 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -632,7 +632,7 @@ function renderDrive(drive, { own, save }) {
   let m3 = null, m3dot = null, m3trail = null;
   const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
   const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = Math.round(v); });
-  const prevOf = i => { const q = A.pts[Math.max(0, i - 4)]; return [q.la, q.lo]; };
+  const prevOf = i => { const q = A.pts[Math.max(0, i - 8)]; return [q.la, q.lo]; };
   // camera views: helicopter (default), street level, or the flat map
   const VIEWS = { heli: '🎥 Chase', street: '🚁 High', '2d': '🗺 2D' };
   let viewMode = store.settings().replayView || 'heli';
@@ -656,7 +656,6 @@ function renderDrive(drive, { own, save }) {
     pins.forEach(p => m3.pin(p.ll, p.fill, p.title));
     m3trail = m3.liveLine('#fff', 3, 0.85);
     m3dot = m3.dot(`<div class="live-dot${playing ? ' moving' : ''}" style="--c:${blue}"><i></i><span class="spd">0</span></div>`, [A.pts[idx].la, A.pts[idx].lo]);
-    m3.map.on('dragstart', () => { if (m3) m3.manual = true; });
     const p = A.pts[idx];
     m3dot.setLatLng([p.la, p.lo]); m3trail.setLatLngs(A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]));
     setSpd(p.v);
@@ -675,7 +674,7 @@ function renderDrive(drive, { own, save }) {
       trail.setLatLngs(idx ? A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]) : []);
       if (m3) {
         m3dot.setLatLng([p.la, p.lo]); m3trail.setLatLngs(A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]));
-        if (pan) { m3.manual = false; m3.follow([p.la, p.lo], prevOf(idx), { duration: 300 }); }
+        if (pan) { m3.touchedAt = 0; m3.follow([p.la, p.lo], prevOf(idx), { duration: 300 }); }
       }
     }
     dotEls().forEach(d => d.classList.toggle('over', !!p.over));
@@ -698,7 +697,7 @@ function renderDrive(drive, { own, save }) {
     playing = true;
     $('#play').textContent = '❚❚';
     dotEls().forEach(d => d.classList.add('moving'));
-    if (m3) m3.manual = false;
+    if (m3) m3.touchedAt = 0;
     let simT = A.pts[idx].t, lastFrame = performance.now();
     const trailPts = A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]);
     const frameFn = now => {
@@ -713,7 +712,7 @@ function renderDrive(drive, { own, save }) {
       if (m3) {
         m3dot.setLatLng(ll);
         m3trail.setLatLngs([...trailPts, ll]);
-        if (!m3.manual) m3.follow(ll, prevOf(j), { speed: a.v + f * (b.v - a.v) });
+        if (performance.now() - m3.touchedAt > 3000) m3.follow(ll, prevOf(j), { speed: a.v + f * (b.v - a.v) });
       }
       setSpd(a.v + f * (b.v - a.v));
       gSoft = ease(gSoft, a.a + f * (b.a - a.a));
@@ -768,6 +767,7 @@ function renderDrive(drive, { own, save }) {
     };
   }
   if (webglOk()) setView(viewMode); else viewMode = '2d';
+  mapHint($('.map-box'), matchMedia('(pointer: coarse)').matches ? undefined : 'Scroll to zoom · right-drag to turn and tilt');
   cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 
   // other drives on the same route: yours, and friends' drives you've saved
@@ -798,6 +798,18 @@ function setGBar(el, g) {
   if (v) v.textContent = `${g >= 0 ? '+' : '−'}${Math.abs(g).toFixed(2)} g`;
 }
 const ease = (prev, g, k = 0.18) => prev == null ? g : prev + (g - prev) * k;
+
+// A short hint over a map on how to move it; fades after a few seconds or at the first touch.
+function mapHint(box, text = '🤏 Pinch to zoom · two fingers to turn and tilt') {
+  if (!box) return;
+  const h = document.createElement('div');
+  h.className = 'map-hint';
+  h.textContent = text;
+  box.appendChild(h);
+  const go = () => { h.classList.add('gone'); setTimeout(() => h.remove(), 600); };
+  const t = setTimeout(go, 5000);
+  box.addEventListener('touchstart', () => { clearTimeout(t); go(); }, { once: true, passive: true });
+}
 
 function dotIcon(color) {
   return L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot" style="--c:${color}"><i></i><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
@@ -923,7 +935,8 @@ function renderRace(group, fromHash) {
   let t = 0, playing = false, raf = null, rate = 20;
   // keep everyone in view while it plays; a finger on the map turns that off until "Show everyone"
   let autoFit = true, lastFit = 0;
-  const userMoved = () => { autoFit = false; $('#fitAll').hidden = false; };
+  let movedAt = 0;
+  const userMoved = () => { autoFit = false; movedAt = performance.now(); $('#fitAll').hidden = false; };
   map.on('dragstart', userMoved);
   // 3D view: same lines and dots on a tilted map with buildings
   let m3 = null;
@@ -1024,12 +1037,15 @@ function renderRace(group, fromHash) {
   $('#play').onclick = () => {
     if (playing) return stop();
     if (t >= maxMs) t = 0;
+    autoFit = true; $('#fitAll').hidden = true;
     playing = true; $('#play').textContent = '❚❚';
     let last = performance.now();
     const frameFn = now => {
       if (!playing) return;
       t = Math.min(maxMs, t + (now - last) * rate); last = now;
       draw();
+      // after a few seconds hands-off, the camera takes over again
+      if (!autoFit && performance.now() - movedAt > 5000) { autoFit = true; $('#fitAll').hidden = true; if (m3) m3.resetTrack(); }
       if (autoFit) fitAll(false);
       if (t >= maxMs) { stop(); return; }
       raf = requestAnimationFrame(frameFn);
@@ -1040,6 +1056,7 @@ function renderRace(group, fromHash) {
   $('#speed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   draw();
   if (webglOk() && store.settings().raceView !== '2d') set3D(true);
+  mapHint($('.race-wrap'), matchMedia('(pointer: coarse)').matches ? undefined : 'Scroll to zoom · right-drag to turn and tilt');
   cleanup = () => { stop(); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 }
 
@@ -1120,7 +1137,7 @@ async function planView(saved = null) {
     <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
     <ul class="results" id="sr" hidden></ul>
     <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div><button class="btn small ghost view3d-btn plan-tilt" id="ptilt" hidden>2D</button></div>
-    <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going.</p>
+    <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going. Pinch to zoom; two fingers turn and tilt the map.</p>
     <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
     <ol class="stops" id="stops"></ol>
     <div class="plan-sum" id="psum"></div>

@@ -27,6 +27,11 @@ export class Map3D {
     // a pinch sets how close the chase camera sits from then on
     this.cam = 'heli';
     this.map.on('zoomend', e => { if (e.originalEvent) this.manualZoom = this.map.getZoom(); });
+    // when a finger is on the map the camera holds off, then picks up again a few seconds later
+    this.touchedAt = 0;
+    const touched = e => { if (e.originalEvent) this.touchedAt = performance.now(); };
+    for (const ev of ['dragstart', 'drag', 'zoomstart', 'rotatestart', 'pitchstart']) this.map.on(ev, touched);
+    el.addEventListener('touchstart', () => { this.touchedAt = performance.now(); }, { passive: true });
     this.ready = new Promise(res => this.map.once('style.load', () => {
       if (this.vector) add3dBuildings(this.map, theme, 0.9);
       this.before = this.vector ? labelLayerId(this.map) : undefined;
@@ -102,15 +107,17 @@ export class Map3D {
     const ease = tau => 1 - Math.exp(-dt / tau);
     const z = this.map.getZoom(), br = this.map.getBearing();
     let nb = br;
-    if (heading != null) { const d = ((heading - br + 540) % 360) - 180; nb = br + d * ease(1.6); }
+    if (heading != null) { const d = ((heading - br + 540) % 360) - 180; if (Math.abs(d) > 10) nb = br + d * ease(3); }
     const b = new maplibregl.LngLatBounds();
     lls.forEach(([la, lo]) => b.extend([lo, la]));
     const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: nb });
     if (!cam) return;
     const c = this.map.getCenter(), tc = maplibregl.LngLat.convert(cam.center);
     const tz = Math.min(18, cam.zoom - 0.9);
-    const kz = ease(tz < z ? 0.35 : 1.4), kc = ease(0.3);
-    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * kc, c.lat + (tc.lat - c.lat) * kc], zoom: z + (tz - z) * kz, pitch: 66, bearing: nb });
+    // zoom in only for a real change, so it doesn't keep breathing in and out
+    const goal = tz < z || tz - z > 0.35 ? tz : z;
+    const kz = ease(goal < z ? 0.8 : 3), kc = ease(0.6);
+    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * kc, c.lat + (tc.lat - c.lat) * kc], zoom: z + (goal - z) * kz, pitch: 66, bearing: nb });
   }
   resetTrack() { this.lastTrack = null; }
 
@@ -119,17 +126,22 @@ export class Map3D {
     // 'heli' is the chase camera (race footage): low and tight behind the car, swinging round with it;
     // 'street' is a calmer, higher view
     const chase = this.cam !== 'street';
+    // eased by real time, so the camera moves like a steady operator whatever the frame rate
+    const now = performance.now(), dt = Math.min(0.1, ((now - (this.lastFollow || now)) / 1000) || 0.016);
+    this.lastFollow = now;
+    const ease = tau => (duration ? 1 : 1 - Math.exp(-dt / tau));
     if (from && (from[0] !== la || from[1] !== lo)) {
       const h = bearing(from[0], from[1], la, lo);
       if (this.heading == null) this.heading = h;
       else {
         const d = ((h - this.heading + 540) % 360) - 180;
-        this.heading = (this.heading + d * (chase ? 0.14 : 0.06) + 360) % 360;
+        // small wiggles are ignored; real bends are followed smoothly
+        if (Math.abs(d) > 4) this.heading = (this.heading + d * ease(chase ? 0.9 : 1.6) + 360) % 360;
         // how hard we're turning (eased): used to swing the camera out wide through bends
-        this.turn = (this.turn || 0) + (Math.max(-60, Math.min(60, d)) - (this.turn || 0)) * 0.08;
+        this.turn = (this.turn || 0) + (Math.max(-60, Math.min(60, d)) - (this.turn || 0)) * ease(1.5);
       }
     }
-    if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * 0.05;
+    if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * ease(3);
     // pulls back a little as the speed rises, like a camera car keeping pace
     const pull = Math.min(1, (this.speed || 0) / 110) * 0.9;
     const opts = { center: [lo, la], zoom: this.manualZoom ?? (chase ? 18.4 - pull : 17.4), pitch: chase ? 78 : 60, bearing: this.heading ?? this.map.getBearing() };
@@ -137,7 +149,7 @@ export class Map3D {
     el.classList.toggle('cam-chase', chase);
     // the car sits low in the picture, with the road ahead filling the rest
     // through a bend the car slides toward the inside of the picture, as if the camera car swings wide
-    const swing = chase ? -(this.turn || 0) / 60 * el.clientWidth * 0.18 : 0;
+    const swing = chase ? -(this.turn || 0) / 60 * el.clientWidth * 0.12 : 0;
     opts.offset = [swing, el.clientHeight * (chase ? 0.24 : 0.15)];
     this.map.easeTo({ ...opts, duration });
   }
