@@ -2,6 +2,7 @@
 import * as store from './store.js';
 import { hav } from './analysis.js';
 import { GuideTracker } from './guide.js';
+import { ACTIVITIES, actKey } from './activity.js';
 
 const MAX_ACCURACY_M = 50;
 const FLUSH_EVERY = 10;
@@ -22,7 +23,7 @@ export class Recorder extends EventTarget {
   }
 
   // Must be called straight from a tap: iPhone only shows the motion permission prompt then.
-  async start(resumeId, guide = null) {
+  async start(resumeId, guide = null, activity = 'drive') {
     if (this.active) return this.id;
     const motionPerm = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'
       ? DeviceMotionEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
@@ -31,21 +32,22 @@ export class Recorder extends EventTarget {
     if (guide && !resumeId) { this.guide = guide; this.tracker = new GuideTracker(guide); }
     const s = store.settings();
     this.autoStopMs = (s.autoStopMin || 5) * 60000;
+    this.activity = activity;
     if (resumeId) {
       const d = await store.getDrive(resumeId);
       const pts = await store.chunkPoints(resumeId);
-      this.id = resumeId; this.startedAt = d.startedAt;
+      this.id = resumeId; this.startedAt = d.startedAt; this.activity = actKey(d);
       this.seq = (pts.length ? Math.ceil(pts.length / FLUSH_EVERY) : 0) + 1000; // never collide with earlier chunks
       this.count = pts.length;
       for (let i = 1; i < pts.length; i++) this.distance += hav(pts[i - 1].la, pts[i - 1].lo, pts[i].la, pts[i].lo);
       this.last = pts[pts.length - 1] || null;
       this.track = pts.map(p => [p.la, p.lo]);
-      this.hasMoved = true;
+      this.hasMoved = !!ACTIVITIES[this.activity].moveKmh;
       if (d.guide) { this.guide = d.guide; this.tracker = new GuideTracker(d.guide, { anywhere: true }); }
     } else {
       this.id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       this.startedAt = Date.now();
-      await store.putDrive({ id: this.id, status: 'recording', startedAt: this.startedAt, name: '', guide: guide || undefined });
+      await store.putDrive({ id: this.id, status: 'recording', startedAt: this.startedAt, name: '', activity, guide: guide || undefined });
     }
     if ((await motionPerm) === 'granted') {
       this.onMotion = e => {
@@ -112,8 +114,9 @@ export class Recorder extends EventTarget {
     this.buf.push(p);
     this.count++;
     if (this.buf.length >= FLUSH_EVERY) this.flush();
-    // auto-stop once parked for a while after having driven
-    if (kmh > 10) this.hasMoved = true;
+    // auto-stop once parked for a while after having got going (not for walks and hikes: you may stop to look)
+    const moveKmh = ACTIVITIES[this.activity]?.moveKmh;
+    if (moveKmh && kmh > moveKmh) this.hasMoved = true;
     if (kmh < 3) { if (this.stillSince == null) this.stillSince = t; }
     else this.stillSince = null;
     this.emit();

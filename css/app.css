@@ -333,3 +333,16 @@ h2 { font-size: 1.1rem; }
 .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #3b82f6; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(59,130,246,.25); }
 .map-hint { position: absolute; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 800; pointer-events: none; white-space: nowrap; padding: 6px 12px; border-radius: 999px; background: rgba(15, 17, 21, 0.8); color: #fff; font-size: 0.8rem; font-weight: 600; transition: opacity .5s; }
 .map-hint.gone { opacity: 0; }
+
+/* activity picker (before recording) and route modes (planner) */
+.act-pick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 6px 0 12px; }
+.act-btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 4px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: inherit; font: inherit; font-size: 0.82rem; font-weight: 600; }
+.act-btn span { font-size: 1.5rem; line-height: 1.2; }
+.act-btn.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+.mode-row { display: flex; gap: 6px; overflow-x: auto; margin: 4px 0 8px; scrollbar-width: none; }
+.mode-row::-webkit-scrollbar { display: none; }
+.mode-btn { flex: 1 0 auto; padding: 7px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: inherit; font: inherit; font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+.mode-btn.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.act-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; }
+.act-row select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: inherit; }
+.act-ico { margin-right: 2px; }

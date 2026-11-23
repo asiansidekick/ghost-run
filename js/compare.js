@@ -1,6 +1,7 @@
 // Finds drives that cover the same route and lines them up over the stretch they all share,
 // so their times can be compared and replayed side by side.
 import { hav, analyse } from './analysis.js';
+import { ACTIVITIES, actOf } from './activity.js';
 
 const NEAR_M = 70;          // how close two tracks must be to count as the same road
 const MATCH_SHARE = 0.85;   // share of sampled points that must be near the other track
@@ -66,7 +67,8 @@ export function overlapOn(A, B) {
 export function labelFor(d, myName) {
   const who = d.from || myName || 'You';
   const when = new Date(d.startedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  return `${who}, ${when}`;
+  const a = d.activity && d.activity !== 'drive' && ACTIVITIES[d.activity];
+  return `${a ? a.icon + ' ' : ''}${who}, ${when}`;
 }
 
 // ref: the drive being looked at; candidates: other drives. Returns entries sorted fastest first.
@@ -86,7 +88,7 @@ export function compareGroup(ref, candidates, myName) {
   const entries = all.map(({ d }) => {
     const i0 = nearestIn(d.points, startP).i;
     const i1 = nearestIn(d.points, endP, i0 + 1).i;
-    const A = analyse(d.points, d.limits);
+    const A = analyse(d.points, actOf(d).limits ? d.limits : undefined);
     const slice = A.pts.slice(i0, i1 + 1);
     const ms = d.points[i1].t - d.points[i0].t;
     const dist = slice[slice.length - 1].dist - slice[0].dist;

@@ -59,10 +59,11 @@ export function turnsFromSteps(points, steps) {
   return turns;
 }
 
-export async function turnsFor(points, steps = null) {
-  if (steps && steps.length) return { source: 'osrm', turns: turnsFromSteps(points, steps) };
+export async function turnsFor(points, steps = null, mode = 'car') {
+  if (steps && steps.length) return { source: mode === 'line' ? 'plan' : 'osrm', turns: turnsFromSteps(points, steps) };
+  if (mode === 'line') return { source: 'shape', turns: geometricTurns(points) };
   try {
-    const turns = turnsFromSteps(points, await directionsFor(points));
+    const turns = turnsFromSteps(points, await directionsFor(points, mode));
     if (turns.length) return { source: 'osrm', turns };
   } catch (e) { console.warn('Directions service unavailable, using route shape', e); }
   return { source: 'shape', turns: geometricTurns(points) };

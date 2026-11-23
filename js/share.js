@@ -100,13 +100,13 @@ export async function packDrive(drive, { trim = true, from = '' } = {}) {
   const pts = pick(drive.points, idx);
   const t0 = pts[0].t;
   const obj = {
-    v: 1, k: 'd', n: drive.name || '', f: from, t0,
+    v: 1, k: 'd', n: drive.name || '', f: from, t0, a: drive.activity && drive.activity !== 'drive' ? drive.activity : undefined,
     p: encodePolyline(pts.map(p => [p.la, p.lo])),
     d: pts.map((p, i) => i ? Math.round((p.t - pts[i - 1].t) / 100) : 0),
     s: pts.map(p => p.s == null ? -1 : Math.round(p.s * 10)),
     m: pts.some(p => p.m != null) ? pts.map(p => p.m == null ? -1 : Math.round(p.m * 10)) : undefined,
   };
-  if (drive.limits) {
+  if (drive.limits && (!drive.activity || drive.activity === 'drive')) {
     obj.l = rle(pick(drive.limits.v, idx));
     obj.ls = rle(pick(drive.limits.src, idx));
     obj.lst = drive.limits.status;
@@ -114,23 +114,23 @@ export async function packDrive(drive, { trim = true, from = '' } = {}) {
   return pack(obj);
 }
 
-export async function packRoute(points, { name = '', from = '', trim = true } = {}) {
+export async function packRoute(points, { name = '', from = '', trim = true, mode = 'car', activity } = {}) {
   let { from: a, to: b } = trim ? trimEnds(points) : { from: 0, to: points.length - 1 };
   const slice = points.slice(a, b + 1);
   const keep = simplifyIdx(slice, 6);
-  return pack({ v: 1, k: 'r', n: name, f: from, p: encodePolyline(keep.map(i => [slice[i].la, slice[i].lo])) });
+  return pack({ v: 1, k: 'r', n: name, f: from, m: mode !== 'car' ? mode : undefined, a: activity, p: encodePolyline(keep.map(i => [slice[i].la, slice[i].lo])) });
 }
 
 // Back to the same shape as a stored drive.
 export function toDrive(obj) {
   const coords = decodePolyline(obj.p);
-  if (obj.k === 'r') return { kind: 'route', name: obj.n, from: obj.f, points: coords.map(([la, lo]) => ({ la, lo })) };
+  if (obj.k === 'r') return { kind: 'route', name: obj.n, from: obj.f, mode: obj.m || 'car', activity: obj.a, points: coords.map(([la, lo]) => ({ la, lo })) };
   let t = obj.t0;
   const points = coords.map(([la, lo], i) => {
     t += (obj.d[i] || 0) * 100;
     return { t, la, lo, s: obj.s[i] < 0 ? null : obj.s[i] / 10, m: obj.m && obj.m[i] >= 0 ? obj.m[i] / 10 : null };
   });
-  const drive = { kind: 'drive', name: obj.n, from: obj.f, startedAt: points[0]?.t, endedAt: points[points.length - 1]?.t, points };
+  const drive = { kind: 'drive', name: obj.n, from: obj.f, activity: obj.a, startedAt: points[0]?.t, endedAt: points[points.length - 1]?.t, points };
   if (obj.l) drive.limits = { v: unrle(obj.l), src: unrle(obj.ls), status: obj.lst || 'osm' };
   return drive;
 }

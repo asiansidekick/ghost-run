@@ -1,7 +1,11 @@
 // Turn-by-turn directions for a shared or planned route, from the free public OSRM server (OpenStreetMap roads).
 import { hav } from './analysis.js';
 
-const OSRM = 'https://router.project-osrm.org/match/v1/driving/';
+const MATCH = {
+  car: 'https://router.project-osrm.org/match/v1/driving/',
+  bike: 'https://routing.openstreetmap.de/routed-bike/match/v1/driving/',
+  foot: 'https://routing.openstreetmap.de/routed-foot/match/v1/driving/',
+};
 const MAX_COORDS = 90;
 
 function sample(points, every = 120) {
@@ -39,7 +43,8 @@ function phrase(step) {
   }
 }
 
-export async function directionsFor(points) {
+export async function directionsFor(points, mode = 'car') {
+  if (!MATCH[mode]) throw new Error('This route goes in straight lines, off any road or path');
   const pts = sample(points);
   const steps = [];
   for (let i = 0; i < pts.length - 1; i += MAX_COORDS - 1) {
@@ -47,7 +52,7 @@ export async function directionsFor(points) {
     if (chunk.length < 2) break;
     const coords = chunk.map(p => `${p.lo.toFixed(5)},${p.la.toFixed(5)}`).join(';');
     const radiuses = chunk.map(() => 30).join(';');
-    const res = await fetch(`${OSRM}${coords}?steps=true&overview=false&tidy=true&gaps=ignore&radiuses=${radiuses}`);
+    const res = await fetch(`${MATCH[mode]}${coords}?steps=true&overview=false&tidy=true&gaps=ignore&radiuses=${radiuses}`);
     if (!res.ok) throw new Error('Directions service ' + res.status);
     const json = await res.json();
     if (json.code !== 'Ok') throw new Error(json.message || json.code);
@@ -75,7 +80,7 @@ export function tidySteps(steps) {
 }
 
 // Google Maps accepts only a handful of stops, so pass evenly spaced points along the route.
-export function googleMapsUrl(points) {
+export function googleMapsUrl(points, mode = 'car') {
   const a = points[0], b = points[points.length - 1];
   const via = [];
   const n = Math.min(8, Math.max(0, points.length - 2));
@@ -88,6 +93,6 @@ export function googleMapsUrl(points) {
   u.searchParams.set('origin', `${a.la.toFixed(5)},${a.lo.toFixed(5)}`);
   u.searchParams.set('destination', `${b.la.toFixed(5)},${b.lo.toFixed(5)}`);
   if (via.length) u.searchParams.set('waypoints', via.join('|'));
-  u.searchParams.set('travelmode', 'driving');
+  u.searchParams.set('travelmode', { bike: 'bicycling', foot: 'walking' }[mode] || 'driving');
   return u.toString();
 }

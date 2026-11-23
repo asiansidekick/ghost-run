@@ -1,15 +1,17 @@
 // Following a route while recording: where you are along it, how much is left, whether you've
 // left it, and (when the route came from a timed drive) where that drive's ghost would be now.
 import { hav } from './analysis.js';
+import { actKey, actOf } from './activity.js';
 
 const ON_ROUTE_M = 60;
 const START_ZONE_M = 400;   // the ghost waits until you reach the first stretch of the route
 
 export function guideFromDrive(drive, name) {
-  return { name, from: drive.from || '', points: drive.points.map(p => ({ la: p.la, lo: p.lo, t: p.t })) };
+  return { name, from: drive.from || '', activity: actKey(drive), mode: actOf(drive).route, points: drive.points.map(p => ({ la: p.la, lo: p.lo, t: p.t })) };
 }
 export function guideFromRoute(route) {
-  const g = { name: route.name || 'Route', from: route.from || '', points: route.points.map(p => ({ la: p.la, lo: p.lo })) };
+  const mode = route.mode || (route.plan && route.plan.mode) || 'car';
+  const g = { name: route.name || 'Route', from: route.from || '', mode, activity: route.activity, points: route.points.map(p => ({ la: p.la, lo: p.lo })) };
   // a route planned in the app also carries its turns, stops and expected time
   if (route.plan) Object.assign(g, { plan: route.plan, steps: route.steps, distance: route.distance, duration: route.duration });
   return g;

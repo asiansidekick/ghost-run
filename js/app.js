@@ -15,9 +15,10 @@ import { searchPlaces, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D, pinchZoom } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
+import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 5:00 AM';
+export const APP_VERSION = '24 Nov 2026, 3:30 AM (v29)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -35,7 +36,8 @@ const fmtMin = s => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 360
 const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const fmtDate = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-const driveTitle = d => d.name || `Drive, ${fmtDate(d.startedAt)}`;
+const cap = t => t.charAt(0).toUpperCase() + t.slice(1);
+const driveTitle = d => d.name || `${cap(actOf(d).noun)}, ${fmtDate(d.startedAt)}`;
 
 function toast(msg, ms = 2600) {
   const el = $('#toast');
@@ -101,30 +103,30 @@ async function homeView() {
   view.innerHTML = `
     ${interrupted.map(d => `
       <section class="card warn-card">
-        <strong>A drive was interrupted</strong>
+        <strong>A recording was interrupted</strong>
         <p class="muted">Started ${esc(fmtDate(d.startedAt))}. The page closed while recording; everything up to then is saved.</p>
         <div class="row">
           <button class="btn" data-resume="${esc(d.id)}">Continue recording</button>
           <button class="btn ghost" data-finish="${esc(d.id)}">Finish it</button>
         </div>
       </section>`).join('')}
-    <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start a drive'}</a>
+    <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start recording'}</a>
     ${recorder.active ? '' : `<a href="#/plan" class="btn ghost plan-btn">🧭 Plan a route or navigate somewhere</a>`}
     ${!standalone ? `<p class="hint">Tip: add Ghost Run to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
     ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
         <div class="drive-name">${esc(r.name)}</div>
-        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
-    <div class="list-head"><h2 class="section-title">My drives</h2>${done.length ? `<button class="btn small ghost" id="pickMode">Select</button>` : ''}</div>
+        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned ${ROUTE_MODES[r.plan.mode || 'car'].icon} · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
+    <div class="list-head"><h2 class="section-title">My recordings</h2>${done.length ? `<button class="btn small ghost" id="pickMode">Select</button>` : ''}</div>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
       return `<li class="pickable"><input type="checkbox" class="pick-box" data-id="${esc(d.id)}" aria-label="Pick this drive"><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
-        <div class="drive-name">${esc(driveTitle(d))}</div>
+        <div class="drive-name"><span class="act-ico">${actOf(d).icon}</span> ${esc(driveTitle(d))}</div>
         <div class="drive-meta">${d.guide ? `Followed ${esc(d.guide.name)} · ` : ''}${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
-        ${A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
+        ${!actOf(d).limits ? '' : A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
       </a></li>`;
     }).join('')}</ul>` : `
       <section class="card empty">
-        <p>No drives yet. Mount your phone, tap <strong>Start a drive</strong>, and tap Stop once you're parked.</p>
+        <p>Nothing recorded yet. Tap <strong>Start recording</strong>, pick a drive, ride, run, walk or anything else, and hold Stop when you're done.</p>
         <button class="btn ghost" id="sample">Show me a sample drive</button>
         <p class="muted small">Have a backup file? <a href="#/settings">Restore it in Settings</a>.</p>
       </section>`}
@@ -181,10 +183,10 @@ async function homeView() {
     view.querySelectorAll('.pick-box').forEach(b => b.onchange = sync);
     $('#pickDel').onclick = async () => {
       const ids = picks();
-      if (!ids.length || !confirm(`Delete ${ids.length === 1 ? 'this drive' : ids.length + ' drives'} from this phone? Links you already shared keep working.`)) return;
+      if (!ids.length || !confirm(`Delete ${ids.length === 1 ? 'this recording' : ids.length + ' recordings'} from this phone? Links you already shared keep working.`)) return;
       for (const id of ids) await store.deleteDrive(id);
       view.classList.remove('picking');
-      toast(ids.length === 1 ? 'Drive deleted.' : `${ids.length} drives deleted.`);
+      toast(ids.length === 1 ? 'Deleted.' : `${ids.length} recordings deleted.`);
       route();
     };
     $('#pickPlay').onclick = async () => {
@@ -209,11 +211,11 @@ let lastReroute = 0;
 const voice = new Voice();
 const turnsCache = new WeakMap();
 function getTurns(guide) {
-  if (!turnsCache.has(guide)) turnsCache.set(guide, turnsFor(guide.points, guide.steps));
+  if (!turnsCache.has(guide)) turnsCache.set(guide, turnsFor(guide.points, guide.steps, guide.mode || 'car'));
   return turnsCache.get(guide);
 }
 function followGuide(guide) {
-  if (recorder.active) { toast('Stop the current drive first.'); return; }
+  if (recorder.active) { toast('Stop the current recording first.'); return; }
   pendingGuide = guide;
   getTurns(guide); // start working out the turns while you get ready
   if (location.hash === '#/record') route(); else location.hash = '#/record';
@@ -222,27 +224,42 @@ function followGuide(guide) {
 function recordView() {
   if (!recorder.active) {
     const g = pendingGuide;
-    view.innerHTML = `
-      ${g ? `<section class="card banner follow-banner">
-        <div><strong>${g.plan ? 'Navigating' : 'Following'}:</strong> ${esc(g.name)}${g.points[0].t != null ? '<br><span class="small">A ghost car will drive it alongside you, starting when you reach the start of the route.</span>' : ''}${g.plan ? `<br><span class="small">${fmtKm(g.distance || 0)}, about ${fmtMin(g.duration || 0)}. Turn-by-turn from wherever you are; if you leave the route it finds a new one.</span>` : ''}</div>
-        <button class="btn small ghost" id="nofollow">Don't follow</button>
-      </section>` : ''}
-      <section class="card">
-        <h1>Before you set off</h1>
-        <ol class="steps">
+    let act = g ? (g.activity && ACTIVITIES[g.activity] ? g.activity : activityForMode(g.mode, store.settings().activity)) : (store.settings().activity || 'drive');
+    if (!ACTIVITIES[act]) act = 'drive';
+    const tips = a => a === 'drive' ? `
           <li>Put the phone in a fixed cradle, ideally plugged in to charge.</li>
           <li>Tap Start while you're parked. Allow location and motion access if asked.</li>
           <li>Leave this page open on screen while you drive. The screen stays on and the map follows you.</li>
-          <li>Once parked, hold Stop. If you forget, it stops on its own after ${store.settings().autoStopMin} minutes parked.</li>
-        </ol>
-        <p class="muted small">Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map.</p>
+          <li>Once parked, hold Stop. If you forget, it stops on its own after ${store.settings().autoStopMin} minutes parked.</li>` : `
+          <li>Tap Start where you set off. Allow location access if asked.</li>
+          <li>Keep this page open with the screen on${a === 'ride' ? ', with the phone on a bar mount if you can' : a === 'boat' ? ', and the phone somewhere dry' : ''}. Taking a call or switching apps pauses recording.</li>
+          <li>Hold Stop when you're done.${ACTIVITIES[a].moveKmh ? ` If you forget, it stops on its own after ${store.settings().autoStopMin} minutes standing still.` : ''}</li>
+          <li>Off-road is fine: it records wherever the GPS can see the sky, roads or not.</li>`;
+    view.innerHTML = `
+      ${g ? `<section class="card banner follow-banner">
+        <div><strong>${g.plan ? 'Navigating' : 'Following'}:</strong> ${esc(g.name)}${g.points[0].t != null ? '<br><span class="small">A ghost will go round it alongside you, starting when you reach the start of the route.</span>' : ''}${g.plan ? `<br><span class="small">${fmtKm(g.distance || 0)}, about ${fmtMin(g.duration || 0)}. Turn-by-turn from wherever you are; if you leave the route it finds a new one.</span>` : ''}</div>
+        <button class="btn small ghost" id="nofollow">Don't follow</button>
+      </section>` : ''}
+      <h2 class="section-title">What are you doing?</h2>
+      <div class="act-pick" id="actPick">${Object.entries(ACTIVITIES).map(([k, a]) => `<button class="act-btn${k === act ? ' on' : ''}" data-act="${k}"><span>${a.icon}</span>${a.label}</button>`).join('')}</div>
+      <section class="card">
+        <h1>Before you set off</h1>
+        <ol class="steps" id="tips">${tips(act)}</ol>
+        <p class="muted small" id="tipNote">${act === 'drive' ? "Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map." : 'Gaps in recording show dashed on the map.'}</p>
       </section>
       <button class="btn big start" id="go">Start</button>
       ${g ? '' : `<a href="#/plan" class="btn ghost plan-btn">🧭 Plan a route first</a>`}`;
+    $('#actPick').querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
+      act = b.dataset.act;
+      store.saveSettings({ ...store.settings(), activity: act });
+      $('#actPick').querySelectorAll('.act-btn').forEach(x => x.classList.toggle('on', x === b));
+      $('#tips').innerHTML = tips(act);
+      $('#tipNote').textContent = act === 'drive' ? "Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map." : 'Gaps in recording show dashed on the map.';
+    });
     if ($('#nofollow')) $('#nofollow').onclick = () => { pendingGuide = null; recordView(); };
     $('#go').onclick = () => {
       if (pendingGuide) voice.unlock();
-      recorder.start(null, pendingGuide); pendingGuide = null;
+      recorder.start(null, pendingGuide, act); pendingGuide = null;
       if (webglOk()) Promise.all([loadMapLibre(), loadStyle()]).catch(() => {}).then(() => { if (location.hash === '#/record') recordView(); });
       else recordView();
     };
@@ -252,7 +269,7 @@ function recordView() {
   view.innerHTML = `
     <section class="live live-map-mode">
       <div class="live-top">
-        <div class="live-speed-sm"><span id="lv">0</span><small>km/h</small></div>
+        <div class="live-speed-sm"><span id="lv">0</span><small id="lvu">km/h</small></div>
         <div class="live-mini">
           <div><span id="lt">0:00</span><small>time</small></div>
           <div><span id="ld">0 m</span><small>distance</small></div>
@@ -303,20 +320,21 @@ function recordView() {
   let lastCount = -1;
   const upd = () => {
     if (!recorder.active) return;
-    $('#lv').textContent = Math.round(recorder.speedKmh);
+    const sp = speedFor(ACTIVITIES[recorder.activity] || ACTIVITIES.drive, recorder.speedKmh);
+    $('#lv').textContent = sp.n; $('#lvu').textContent = sp.u;
     $('#ld').textContent = fmtKm(recorder.distance);
     $('#ls').textContent = recorder.error || (recorder.count ? `Recording · GPS ±${Math.round(recorder.accuracy ?? 0)} m` : 'Waiting for GPS…');
     $('#ls').className = 'live-status ' + (recorder.error ? 'bad' : recorder.count ? 'ok' : '');
     $('#lf').innerHTML = [
       recorder.wakeLock ? 'Screen kept on' : 'Screen may sleep: keep this page open',
-      recorder.motionOk ? 'Motion sensor on' : 'Using GPS for braking',
+      (ACTIVITIES[recorder.activity] || {}).pace ? `${(ACTIVITIES[recorder.activity] || {}).icon} ${cap(ACTIVITIES[recorder.activity].noun)}` : recorder.motionOk ? 'Motion sensor on' : 'Using GPS for braking',
     ].map(t => `<span>${t}</span>`).join('');
     if (recorder.count !== lastCount && recorder.last) {
       lastCount = recorder.count;
       const ll = [recorder.last.la, recorder.last.lo];
       if (recorder.speedKmh > 4) map.updateHeading(recorder.gpsHeading, recorder.track);
       const overNow = false;
-      map.setMe(ll, Math.round(recorder.speedKmh), overNow);
+      map.setMe(ll, speedFor(ACTIVITIES[recorder.activity] || ACTIVITIES.drive, recorder.speedKmh).n, overNow);
       map.setTrail(recorder.track);
       if (follow) map.follow(ll, g ? lookAhead() : null);
     }
@@ -373,7 +391,7 @@ function recordView() {
     const stops = [...(!st.started && !plan.fromMe && plan.start ? [plan.start] : []), ...left];
     if (!stops.length) return;
     const here = { la: recorder.last.la, lo: recorder.last.lo, name: 'You' };
-    routeThrough([here, ...stops]).then(async r => {
+    routeThrough([here, ...stops], plan.mode || 'car', (ACTIVITIES[recorder.activity] || ACTIVITIES.drive).kmh).then(async r => {
       if (!recorder.active || recorder.guide !== g) return;
       const ng = { ...g, points: r.points, steps: r.steps, distance: r.distance, duration: r.duration, plan: { ...plan, fromMe: true, start: null, stops, stopsAt: r.stopsAt } };
       await recorder.setGuide(ng);
@@ -438,12 +456,13 @@ function recordView() {
 
 // A single drive from a GPX or CSV file (ours or another logger's). Returns null for anything else.
 function importTrack(text, filename = '') {
-  let pts = [];
+  let pts = [], hint = '';
   const name = filename.replace(/\.(gpx|csv)$/i, '').replace(/[-_]+/g, ' ').trim();
   if (/<gpx[\s>]/i.test(text)) {
     const doc = new DOMParser().parseFromString(text, 'application/xml');
     const nodes = [...doc.getElementsByTagName('trkpt')];
     const list = nodes.length ? nodes : [...doc.getElementsByTagName('rtept')];
+    hint = doc.getElementsByTagName('type')[0]?.textContent || doc.getElementsByTagName('name')[0]?.textContent || '';
     pts = list.map(n => {
       const time = n.getElementsByTagName('time')[0]?.textContent;
       const sp = n.getElementsByTagName('speed')[0]?.textContent;
@@ -465,7 +484,8 @@ function importTrack(text, filename = '') {
   const id = 'i' + Date.now().toString(36);
   if (!timed) return { id, status: 'route', name: name || 'Imported route', startedAt: Date.now(), points: pts.map(p => ({ la: p.la, lo: p.lo })) };
   pts.sort((a, b) => a.t - b.t);
-  return { id, status: 'done', name: name || 'Imported drive', startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts };
+  const activity = guessActivity(pts, hint + ' ' + filename);
+  return { id, status: 'done', activity, name: name || `Imported ${ACTIVITIES[activity].noun}`, startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts };
 }
 
 const lowerFirst = t => t.charAt(0).toLowerCase() + t.slice(1);
@@ -486,14 +506,20 @@ async function ensureLimits(drive, save) {
 async function ownDriveView(id) {
   view.innerHTML = `<p class="loading">Loading drive…</p>`;
   const drive = await store.getDrive(id);
-  if (!drive) { view.innerHTML = `<section class="card"><p>That drive isn't on this phone.</p><a class="btn" href="#/">My drives</a></section>`; return; }
+  if (!drive) { view.innerHTML = `<section class="card"><p>That recording isn't on this phone.</p><a class="btn" href="#/">Home</a></section>`; return; }
   if (drive.status === 'recording') { location.hash = recorder.id === id ? '#/record' : '#/'; return; }
   if (!drive.points || drive.points.length < 2) {
-    view.innerHTML = `<section class="card"><h2>Too short to show</h2><p class="muted">This drive has fewer than two GPS readings. GPS may not have locked on.</p><button class="btn ghost" id="del">Delete it</button></section>`;
+    view.innerHTML = `<section class="card"><h2>Too short to show</h2><p class="muted">This recording has fewer than two GPS readings. GPS may not have locked on.</p><button class="btn ghost" id="del">Delete it</button></section>`;
     $('#del').onclick = async () => { await store.deleteDrive(id); location.hash = '#/'; };
     return;
   }
   const save = async () => { drive.summary = analyse(drive.points, drive.limits).summary; await store.putDrive(drive); };
+  // Speed limits only matter for drives
+  if (!actOf(drive).limits) {
+    if (drive.limits || !drive.summary) { delete drive.limits; await save(); }
+    renderDrive(drive, { own: true, save });
+    return;
+  }
   // Show the drive straight away with Thai defaults, and look up posted limits in the background.
   const needsLookup = !drive.limits || drive.limits.status === 'defaults' || drive.limits.status === 'pending';
   if (!drive.limits) { drive.limits = { ...defaultLimits(drive.points), status: 'pending' }; await save(); }
@@ -524,14 +550,16 @@ async function sharedView(payload) {
   catch { view.innerHTML = `<section class="card"><h2>This link looks broken</h2><p class="muted">It may have been cut short when it was sent. Ask your friend to share it again.</p><a class="btn" href="#/">My drives</a></section>`; return; }
   const d = toDrive(obj);
   if (d.kind === 'route') return renderRoute(d);
-  if (!d.limits) await ensureLimits(d);
+  if (!d.limits && actOf(d).limits) await ensureLimits(d);
   renderDrive(d, { own: false });
 }
 
 function stars(n) { return '●'.repeat(n) + '○'.repeat(5 - n); }
 
 function renderDrive(drive, { own, save }) {
-  const A = analyse(drive.points, drive.limits);
+  const act = actOf(drive), motor = !act.pace;
+  const spd = v => speedFor(act, v);
+  const A = analyse(drive.points, act.limits ? drive.limits : undefined);
   const S = A.summary;
   const lim = drive.limits || {};
   const limitsNote = lim.status === 'pending'
@@ -540,58 +568,61 @@ function renderDrive(drive, { own, save }) {
     ? 'Couldn’t reach OpenStreetMap, so every limit here is a Thai default (80 km/h in greater Bangkok, 90 outside).'
     : `About ${Math.round(S.osmShare * 100)}% of this route has a posted limit in OpenStreetMap; the rest uses Thai defaults (80 km/h in greater Bangkok, 90 outside). Limits are approximate.`;
   view.innerHTML = `
-    ${!own ? `<section class="card banner">Shared drive${drive.from ? ` from <strong>${esc(drive.from)}</strong>` : ''}. The first and last few hundred metres may be hidden for privacy.</section>` : ''}
+    ${!own ? `<section class="card banner">${act.icon} Shared ${esc(act.noun)}${drive.from ? ` from <strong>${esc(drive.from)}</strong>` : ''}. The first and last few hundred metres may be hidden for privacy.</section>` : ''}
     <div class="title-row">
-      ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Drive name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
+      ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
     </div>
+    ${own ? `<label class="act-row"><span class="muted small">Activity</span><select id="actSel" aria-label="Activity">${Object.entries(ACTIVITIES).map(([k, a]) => `<option value="${k}"${k === actKey(drive) ? ' selected' : ''}>${a.icon} ${a.label}</option>`).join('')}</select></label>` : ''}
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
+    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar"${motor ? '' : ' hidden'}>${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
       <button class="btn small ghost" id="rspeed" aria-label="Replay speed">20×</button>
     </div>
     <div class="readout" id="readout"></div>
-    <div class="legend"><span><i class="sw blue"></i>Under the limit</span><span><i class="sw red"></i>Over the limit</span><span><i class="sw gap"></i>Recording gap</span><span><i class="dot orange"></i>Hard braking or acceleration</span></div>
+    <div class="legend">${act.limits ? '<span><i class="sw blue"></i>Under the limit</span><span><i class="sw red"></i>Over the limit</span>' : `<span><i class="sw blue"></i>Your ${esc(act.noun)}</span>`}<span><i class="sw gap"></i>Recording gap</span>${motor ? '<span><i class="dot orange"></i>Hard braking or acceleration</span>' : ''}</div>
 
     <section class="stats">
       <div><b>${fmtKm(S.distance)}</b><small>distance</small></div>
       <div><b>${fmtDur(S.durationMs)}</b><small>total time</small></div>
       <div><b>${fmtDur(S.movingMs)}</b><small>moving time</small></div>
-      <div><b>${Math.round(S.avgKmh)}</b><small>avg km/h moving</small></div>
-      <div><b>${Math.round(S.maxKmh)}</b><small>top km/h</small></div>
+      <div><b>${spd(S.avgKmh).n}</b><small>${act.pace ? 'avg pace, min/km' : 'avg km/h moving'}</small></div>
+      <div><b>${spd(S.maxKmh).n}</b><small>${act.pace ? 'best pace, min/km' : 'top km/h'}</small></div>
       <div><b>${S.stops}</b><small>stops</small></div>
-      <div><b>${S.harshBrake}</b><small>hard braking</small></div>
+      ${motor ? `<div><b>${S.harshBrake}</b><small>hard braking</small></div>
       <div><b>${S.harshAccel}</b><small>hard acceleration</small></div>
-      <div><b class="stars">${stars(S.smoothness)}</b><small>smoothness</small></div>
+      <div><b class="stars">${stars(S.smoothness)}</b><small>smoothness</small></div>` : `<div><b>${act.pace ? Math.round(S.avgKmh * 10) / 10 : ''}</b><small>avg km/h</small></div>`}
     </section>
 
-    <section class="card ${S.speedingCount ? 'red-card' : 'green-card'}">
+    ${act.limits ? `<section class="card ${S.speedingCount ? 'red-card' : 'green-card'}">
       ${S.speedingCount
         ? `<strong>${S.speedingCount} stretch${S.speedingCount > 1 ? 'es' : ''} over the limit</strong>
            <p class="small">${fmtKm(S.speedingDist)} in total, ${fmtDur(S.speedingMs)}, up to ${Math.round(S.maxOver)} km/h over.</p>
            <ul class="over-list">${A.speeding.map((x, k) => `<li><button class="linkish" data-jump="${x.i0}">${fmtTime(A.pts[x.i0].t)}</button> · ${fmtKm(x.dist)} where the limit is ${x.limit}, up to ${Math.round(x.limit + x.maxOver)} km/h</li>`).join('')}</ul>`
         : `<strong>No stretches over the limit</strong>`}
       <p class="muted small">${esc(limitsNote)}</p>
-    </section>
+    </section>` : ''}
     <section id="same"></section>
     ${S.gaps ? `<p class="muted small">Recording paused ${S.gaps} time${S.gaps > 1 ? 's' : ''} (page closed or GPS lost). Gaps are shown dashed on the map.</p>` : ''}
 
     <h2 class="section-title">Speed</h2>
     <canvas class="chart" id="cs"></canvas>
-    <p class="muted small chart-key"><i class="sw blue"></i> speed <i class="sw red"></i> over the limit <i class="sw limit"></i> speed limit</p>
+    <p class="muted small chart-key">${act.limits ? '<i class="sw blue"></i> speed <i class="sw red"></i> over the limit <i class="sw limit"></i> speed limit' : '<i class="sw blue"></i> speed, km/h'}</p>
+    <div${motor ? '' : ' hidden'}>
     <h2 class="section-title">Acceleration and braking (g)</h2>
     <canvas class="chart" id="cg"></canvas>
     <p class="muted small chart-key">Above the line is speeding up, below is braking. Dotted lines mark hard acceleration (0.30 g) and hard braking (0.35 g).</p>
+    </div>
 
     <section class="actions">
       <button class="btn start-alt" id="follow">Follow this route with a ghost</button>
-      <button class="btn" id="shareDrive">Share this drive</button>
+      <button class="btn" id="shareDrive">Share this ${esc(act.noun)}</button>
       <button class="btn ghost" id="shareRoute">Share just the route</button>
-      ${!own ? `<button class="btn ghost" id="saveCopy">Save to my drives</button>` : ''}
+      ${!own ? `<button class="btn ghost" id="saveCopy">Save to my recordings</button>` : ''}
       <button class="btn ghost" id="gpx">Export GPX</button>
       <button class="btn ghost" id="csv">Export CSV</button>
-      ${own ? `<button class="btn ghost" id="recheck">Recheck speed limits</button><button class="btn danger" id="delete">Delete drive</button>` : ''}
+      ${own ? `${act.limits ? '<button class="btn ghost" id="recheck">Recheck speed limits</button>' : ''}<button class="btn danger" id="delete">Delete ${esc(act.noun)}</button>` : ''}
     </section>
   `;
 
@@ -631,7 +662,7 @@ function renderDrive(drive, { own, save }) {
   // the 3D view (when on) mirrors the dot and trail
   let m3 = null, m3dot = null, m3trail = null;
   const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
-  const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = Math.round(v); });
+  const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = spd(v).n; });
   const prevOf = i => { const q = A.pts[Math.max(0, i - 8)]; return [q.la, q.lo]; };
   // camera views: helicopter (default), street level, or the flat map
   const VIEWS = { heli: '🎥 Chase', street: '🚁 High', '2d': '🗺 2D' };
@@ -684,7 +715,7 @@ function renderDrive(drive, { own, save }) {
     if (!playing) { setSpd(p.v); gSoft = p.a; setGBar($('#gbar'), p.a); }
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
-    readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${Math.round(p.v)}</b> km/h</span><span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span><span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>`;
+    readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${spd(p.v).n}</b> ${spd(p.v).u}</span>${act.limits ? `<span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span>` : ''}${motor ? `<span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>` : act.pace ? `<span>${Math.round(p.v)} km/h</span>` : ''}`;
     speedChart(cs, A, idx); gChart(cg, A, idx);
   };
   scrub.oninput = () => { stopPlay(); setIdx(+scrub.value, true); };
@@ -739,8 +770,8 @@ function renderDrive(drive, { own, save }) {
     if (r === 'copied') toast('Link copied. Paste it to a friend.');
   };
   $('#shareRoute').onclick = async () => {
-    const payload = await packRoute(drive.points, { name: driveTitle(drive), from: own ? me : drive.from, trim: own && store.settings().trimShare });
-    const r = await shareLink(shareUrl('r', payload), 'Route: ' + driveTitle(drive), `A route to drive: ${driveTitle(drive)}`);
+    const payload = await packRoute(drive.points, { name: driveTitle(drive), from: own ? me : drive.from, trim: own && store.settings().trimShare, mode: act.route, activity: actKey(drive) });
+    const r = await shareLink(shareUrl('r', payload), 'Route: ' + driveTitle(drive), `A route to ${act.pace ? act.noun : act.route === 'car' ? 'drive' : 'follow'}: ${driveTitle(drive)}`);
     if (r === 'copied') toast('Route link copied. Your friend gets a map and directions.');
   };
   $('#follow').onclick = () => followGuide(guideFromDrive(drive, driveTitle(drive)));
@@ -749,13 +780,21 @@ function renderDrive(drive, { own, save }) {
   $('#csv').onclick = () => saveFile(csv(drive, A), fname + '.csv', 'text/csv');
   if ($('#saveCopy')) $('#saveCopy').onclick = async () => {
     const id = 'd' + Date.now().toString(36);
-    await store.putDrive({ id, status: 'done', from: drive.from || 'Friend', name: driveTitle(drive) + (drive.from ? ` (from ${drive.from})` : ''), startedAt: drive.startedAt, endedAt: drive.endedAt, points: drive.points, limits: drive.limits, summary: S });
-    toast('Saved to your drives.');
+    await store.putDrive({ id, status: 'done', activity: actKey(drive), from: drive.from || 'Friend', name: driveTitle(drive) + (drive.from ? ` (from ${drive.from})` : ''), startedAt: drive.startedAt, endedAt: drive.endedAt, points: drive.points, limits: drive.limits, summary: S });
+    toast('Saved to your recordings.');
     location.hash = '#/drive/' + id;
   };
   if (own) {
     $('#name').onchange = async e => { drive.name = e.target.value.trim(); await store.putDrive(drive); toast('Name saved.'); };
-    $('#recheck').onclick = async e => {
+    $('#actSel').onchange = async e => {
+      drive.activity = e.target.value;
+      if (!actOf(drive).limits) delete drive.limits;
+      drive.summary = null;
+      await store.putDrive(drive);
+      toast(`Now a ${actOf(drive).noun}.`);
+      route();
+    };
+    if ($('#recheck')) $('#recheck').onclick = async e => {
       e.target.disabled = true; e.target.textContent = 'Checking…';
       drive.limits = await computeLimits(drive.points);
       await save();
@@ -763,7 +802,7 @@ function renderDrive(drive, { own, save }) {
       route();
     };
     $('#delete').onclick = async () => {
-      if (!confirm('Delete this drive from this phone? Links you already shared keep working.')) return;
+      if (!confirm(`Delete this ${act.noun} from this phone? Links you already shared keep working.`)) return;
       await store.deleteDrive(drive.id);
       location.hash = '#/';
     };
@@ -779,7 +818,7 @@ function renderDrive(drive, { own, save }) {
     const box = $('#same');
     if (!box) return;
     if (!group) {
-      box.innerHTML = `<p class="muted small same-empty">No other drives on this route yet. Share the route with a friend; when they drive it and send you their drive, save it and you can race the two here.</p>`;
+      box.innerHTML = `<p class="muted small same-empty">Nothing else recorded on this route yet. Share the route with a friend; when they do it and send you theirs, save it and you can race the two here, whatever each of you went by.</p>`;
       return;
     }
     renderCompareList(box, group, g2 => renderRace(g2));
@@ -828,7 +867,7 @@ function renderCompareList(box, group, onRace) {
       <ol class="cmp-list pick">${group.entries.map((e, k) => `
         <li class="${e.isRef ? 'me' : ''}">
           <label class="cmp-check"><input type="checkbox" data-k="${k}" ${k < RACE_COLORS.length ? 'checked' : ''}><span class="cmp-pos">${k + 1}</span></label>
-          <span class="cmp-name">${esc(e.label)}${e.isRef ? ' <em>(this drive)</em>' : ''}</span>
+          <span class="cmp-name">${esc(e.label)}${e.isRef ? ' <em>(this one)</em>' : ''}</span>
           <span class="cmp-time">${fmtClock(e.ms)}${k ? `<small>+${fmtClock(e.ms - best)}</small>` : ''}</span>
           <span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span>
         </li>`).join('')}</ol>
@@ -856,18 +895,18 @@ function groupForSelection(drives) {
   const g = compareGroup(ref, rest, me);
   if (g && g.entries.length === drives.length) return { ...g, sameRoute: true };
   const entries = drives.map(d => {
-    const A = analyse(d.points, d.limits);
+    const A = analyse(d.points, actOf(d).limits ? d.limits : undefined);
     const n = d.points.length - 1;
     return {
       drive: d, A, i0: 0, i1: n, ms: d.points[n].t - d.points[0].t, dist: A.summary.distance,
-      label: (d.from ? d.from + ': ' : '') + driveTitle(d), isRef: false, redCount: A.speeding.length,
+      label: (actKey(d) !== 'drive' ? actOf(d).icon + ' ' : '') + (d.from ? d.from + ': ' : '') + driveTitle(d), isRef: false, redCount: A.speeding.length,
     };
   }).sort((a, b) => a.drive.startedAt - b.drive.startedAt);
   return { entries, sameRoute: false };
 }
 
 async function raceFromStore(id) {
-  view.innerHTML = `<p class="loading">Lining up drives…</p>`;
+  view.innerHTML = `<p class="loading">Lining up the race…</p>`;
   const all = await store.allDrives();
   const ref = all.find(d => d.id === id);
   const group = ref && compareGroup(ref, all.filter(d => d.status === 'done' && d.id !== id && !!d.sample === !!ref.sample), store.settings().name);
@@ -1070,23 +1109,24 @@ function upperIdx(P, lo, hi, t) {
 // ---------- shared route with directions ----------
 function renderRoute(r) {
   const pts = r.points;
+  const rmode = ROUTE_MODES[r.mode || (r.plan && r.plan.mode)] ? r.mode || r.plan.mode : 'car';
   view.innerHTML = `
-    <section class="card banner">Route${r.from ? ` from <strong>${esc(r.from)}</strong>` : ''}. Check the way before you set off; don't read directions while driving.</section>
+    <section class="card banner">${ROUTE_MODES[rmode].icon} Route${r.from ? ` from <strong>${esc(r.from)}</strong>` : ''}${rmode === 'line' ? ', in straight lines (off any road or path)' : rmode === 'foot' ? ', on footpaths and trails' : rmode === 'bike' ? ', by bike' : ''}. Check the way before you set off${rmode === 'car' ? "; don't read directions while driving" : ''}.</section>
     <h1>${esc(r.name || 'Shared route')}</h1>
     <div class="map" id="map"></div>
     <section class="actions">
-      <a class="btn" href="${esc(googleMapsUrl(pts))}" target="_blank" rel="noopener">Open in Google Maps</a>
+      ${rmode !== 'line' ? `<a class="btn" href="${esc(googleMapsUrl(pts, rmode))}" target="_blank" rel="noopener">Open in Google Maps</a>` : ''}
       <button class="btn start-alt" id="followRoute">Follow this route</button>
       ${r.id && r.plan ? `<a class="btn ghost" href="#/plan/${encodeURIComponent(r.id)}">Edit route</a>` : ''}
       ${r.id ? `<button class="btn danger" id="delRoute">Remove from my routes</button>` : `<button class="btn ghost" id="saveRoute">Save to my routes</button>`}
     </section>
-    <p class="muted small">Google Maps only takes a few stops along the way, so its route may differ a little from this one.</p>
+    ${rmode !== 'line' ? '<p class="muted small">Google Maps only takes a few stops along the way, so its route may differ a little from this one.</p>' : ''}
     <h2 class="section-title">Directions</h2>
     <ol class="directions" id="dir"><li class="muted">Working out directions…</li></ol>`;
   $('#followRoute').onclick = () => followGuide(guideFromRoute(r));
   if ($('#saveRoute')) $('#saveRoute').onclick = async e => {
     const id = 'r' + Date.now().toString(36);
-    await store.putDrive({ id, status: 'route', name: r.name || 'Shared route', from: r.from || '', startedAt: Date.now(), points: r.points });
+    await store.putDrive({ id, status: 'route', name: r.name || 'Shared route', from: r.from || '', startedAt: Date.now(), points: r.points, mode: rmode, activity: r.activity });
     e.target.outerHTML = '<span class="muted small">Saved. It’s on your home screen under My routes.</span>';
   };
   if ($('#delRoute')) $('#delRoute').onclick = async () => {
@@ -1100,7 +1140,7 @@ function renderRoute(r) {
   map.fitBounds(line.getBounds(), { padding: [24, 24] });
   let stepMarker = null;
   let total = 0;
-  (r.steps ? Promise.resolve(r.steps) : directionsFor(pts)).then(steps => {
+  (r.steps ? Promise.resolve(r.steps) : rmode === 'line' ? turnsFor(pts, null, 'line').then(t => [{ at: 0, la: pts[0].la, lo: pts[0].lo, type: 'depart', text: 'Start, following the line on the map' }, ...t.turns].map((x, k, all) => ({ text: x.text, distance: (all[k + 1] ? all[k + 1].at : x.at) - x.at, type: x.type, loc: [x.lo, x.la] }))) : directionsFor(pts, rmode)).then(steps => {
     $('#dir').innerHTML = steps.map((s, k) => {
       const at = total; total += s.distance;
       return `<li data-k="${k}"><span class="dir-text">${esc(s.text)}</span><span class="dir-dist">${s.type === 'arrive' ? fmtKm(at) + ' total' : 'then ' + fmtKm(s.distance)}</span></li>`;
@@ -1128,13 +1168,16 @@ async function planView(saved = null) {
   const st = {
     fromMe: saved ? !!P.fromMe : true, start: P.start || null,
     stops: (P.stops || []).map(x => ({ ...x })), me: null, result: null,
+    mode: P.mode || (ACTIVITIES[store.settings().activity] || ACTIVITIES.drive).route,
   };
+  const modeKmh = () => ACTIVITIES[activityForMode(st.mode, store.settings().activity)].kmh;
   view.innerHTML = `
     <h1>${saved ? 'Edit route' : 'Plan a route'}</h1>
     <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
     <ul class="results" id="sr" hidden></ul>
+    <div class="mode-row" id="pmode" role="group" aria-label="How the route finds its way">${Object.entries(ROUTE_MODES).map(([k, m]) => `<button class="mode-btn${k === st.mode ? ' on' : ''}" data-mode="${k}">${m.icon} ${m.label}</button>`).join('')}</div>
     <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div><button class="btn small ghost view3d-btn plan-tilt" id="ptilt" hidden>2D</button></div>
-    <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going. Pinch to zoom; two fingers turn and tilt the map.</p>
+    <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going. Pinch to zoom; two fingers turn and tilt the map. For water, fields or trails the map doesn't know, pick 📏 Straight and tap out the way.</p>
     <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
     <ol class="stops" id="stops"></ol>
     <div class="plan-sum" id="psum"></div>
@@ -1192,7 +1235,7 @@ async function planView(saved = null) {
     ['#pgo', '#psave', '#pshare'].forEach(id => { $(id).disabled = !r; });
     map.setRoute(r ? r.points.map(p => [p.la, p.lo]) : null);
     if (!r) return;
-    $('#psum').innerHTML = `<b>${fmtKm(r.distance)}</b> · about <b>${fmtMin(r.duration)}</b>${st.stops.length > 1 ? ` · ${st.stops.length - 1} stop${st.stops.length > 2 ? 's' : ''} on the way` : ''}`;
+    $('#psum').innerHTML = `${ROUTE_MODES[st.mode].icon} <b>${fmtKm(r.distance)}</b> · about <b>${fmtMin(r.duration)}</b>${st.stops.length > 1 ? ` · ${st.stops.length - 1} stop${st.stops.length > 2 ? 's' : ''} on the way` : ''}`;
   }
 
   function changed(fit = false) {
@@ -1208,18 +1251,23 @@ async function planView(saved = null) {
     timer = setTimeout(async () => {
       const n = ++reqNo;
       try {
-        const r = await routeThrough([o, ...st.stops]);
+        const r = await routeThrough([o, ...st.stops], st.mode, modeKmh());
         if (n !== reqNo) return;
         setResult(r);
         if (fit) map.fit(r.points.map(p => [p.la, p.lo]));
       } catch (e) {
         if (n !== reqNo) return;
         setResult(null);
-        $('#psum').innerHTML = `<span class="bad">Couldn't get a route right now (${esc(e.message)}). Check your connection and try again.</span>`;
+        $('#psum').innerHTML = `<span class="bad">Couldn't get a route right now (${esc(e.message)}). Check your connection and try again${st.mode !== 'line' ? ', or pick 📏 Straight' : ''}.</span>`;
       }
     }, 350);
   }
 
+  $('#pmode').querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+    st.mode = b.dataset.mode;
+    $('#pmode').querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('on', x === b));
+    changed();
+  });
   map.onClick(([la, lo]) => {
     const p = { la, lo };
     if (!st.fromMe && !st.start) st.start = { ...p, name: 'Pinned start' };
@@ -1251,21 +1299,21 @@ async function planView(saved = null) {
 
   const guide = () => ({
     name: routeName(), from: '', points: st.result.points, steps: st.result.steps,
-    distance: st.result.distance, duration: st.result.duration,
-    plan: { fromMe: st.fromMe, start: st.fromMe ? null : st.start, stops: st.stops, stopsAt: st.result.stopsAt },
+    distance: st.result.distance, duration: st.result.duration, mode: st.mode,
+    plan: { fromMe: st.fromMe, start: st.fromMe ? null : st.start, stops: st.stops, stopsAt: st.result.stopsAt, mode: st.mode },
   });
   $('#pgo').onclick = () => { lastReroute = 0; followGuide(guide()); };
   $('#psave').onclick = async () => {
     const g = guide();
     const id = saved ? saved.id : 'r' + Date.now().toString(36);
-    await store.putDrive({ id, status: 'route', name: g.name, from: '', startedAt: saved ? saved.startedAt : Date.now(), points: g.points, steps: g.steps, plan: g.plan, distance: g.distance, duration: g.duration });
+    await store.putDrive({ id, status: 'route', name: g.name, from: '', startedAt: saved ? saved.startedAt : Date.now(), points: g.points, steps: g.steps, plan: g.plan, mode: g.mode, distance: g.distance, duration: g.duration });
     toast(saved ? 'Route saved.' : 'Saved. It’s on your home screen under My routes.');
     location.hash = '#/route/' + encodeURIComponent(id);
   };
   $('#pshare').onclick = async () => {
     const g = guide();
-    const payload = await packRoute(g.points, { name: g.name, from: store.settings().name, trim: false });
-    const r = await shareLink(shareUrl('r', payload), 'Route: ' + g.name, `A route to drive: ${g.name} (${fmtKm(g.distance)})`);
+    const payload = await packRoute(g.points, { name: g.name, from: store.settings().name, trim: false, mode: g.mode });
+    const r = await shareLink(shareUrl('r', payload), 'Route: ' + g.name, `A route: ${g.name} (${fmtKm(g.distance)})`);
     if (r === 'copied') toast('Route link copied. Your friend gets a map and directions.');
   };
 
