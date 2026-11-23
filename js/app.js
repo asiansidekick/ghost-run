@@ -14,7 +14,7 @@ import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '23 Nov 2026, 8:30 PM';
+export const APP_VERSION = '23 Nov 2026, 11:00 PM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -935,8 +935,8 @@ function planView(saved = null) {
     <h1>${saved ? 'Edit route' : 'Plan a route'}</h1>
     <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
     <ul class="results" id="sr" hidden></ul>
-    <div class="map plan-map" id="pmap"></div>
-    <p class="muted small" id="phint">Tap the map to add a stop. Drag a pin to move it. The last stop is where you're going.</p>
+    <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div></div>
+    <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going.</p>
     <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
     <ol class="stops" id="stops"></ol>
     <div class="plan-sum" id="psum"></div>
@@ -966,6 +966,9 @@ function planView(saved = null) {
       markers.push(m);
     });
     const o = origin();
+    $('#pchip').textContent = !st.fromMe && !st.start ? '👆 Tap the map to set your start'
+      : !st.stops.length ? '👆 Tap the map where you’re going'
+      : '👆 Tap to add a stop · last one is the finish';
     $('#stops').innerHTML = `
       <li class="stop-item origin"><span class="stop-tag ${o ? 'start' : ''}">S</span><span class="stop-name">${st.fromMe ? (st.me ? 'Your location' : 'Finding your location…') : st.start ? esc(st.start.name) : '<span class="muted">Tap the map to set the start</span>'}</span></li>
       ${st.stops.map((x, k) => `

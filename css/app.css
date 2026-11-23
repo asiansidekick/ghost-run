@@ -277,3 +277,7 @@ h2 { font-size: 1.1rem; }
 .stop-pin { box-shadow: 0 2px 6px rgba(0,0,0,.5); }
 .plan-sum { margin: 10px 0; min-height: 1.4em; }
 .name-input { grid-column: 1 / -1; font: inherit; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: inherit; }
+/* no iOS Copy / Look Up menu or text selection when holding a finger on a map */
+.map, .live-map, .leaflet-container, .maplibregl-map { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.plan-map-wrap { position: relative; }
+.map-chip { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 500; pointer-events: none; max-width: calc(100% - 24px); padding: 7px 12px; border-radius: 999px; background: rgba(15,17,21,0.85); color: #fff; font-size: 0.8rem; font-weight: 600; text-align: center; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
