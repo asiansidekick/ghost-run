@@ -43,39 +43,44 @@ function samplePath(points) {
   const out = [];
   let last = null;
   for (const p of points) {
-    if (!last || hav(last.la, last.lo, p.la, p.lo) > 80) { out.push(p); last = p; }
+    if (!last || hav(last.la, last.lo, p.la, p.lo) > 100) { out.push(p); last = p; }
   }
   const end = points[points.length - 1];
   if (end && out[out.length - 1] !== end) out.push(end);
   return out;
 }
 
+// Ask both public Overpass servers at once and take whichever answers first, giving up after 20 s.
 async function overpass(query) {
-  let lastErr;
-  for (const url of OVERPASS) {
-    try {
+  const ctrls = OVERPASS.map(() => new AbortController());
+  const timer = setTimeout(() => ctrls.forEach(c => c.abort()), 20000);
+  try {
+    return await Promise.any(OVERPASS.map(async (url, k) => {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: 'data=' + encodeURIComponent(query),
+        signal: ctrls[k].signal,
       });
       if (!res.ok) throw new Error('Overpass ' + res.status);
-      return await res.json();
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
+      const json = await res.json();
+      ctrls.forEach((c, j) => { if (j !== k) c.abort(); });
+      return json;
+    }));
+  } finally { clearTimeout(timer); }
 }
 
 export async function fetchWays(points) {
   const path = samplePath(points);
   const ways = new Map();
-  for (let i = 0; i < path.length; i += 250) {
-    const chunk = path.slice(Math.max(0, i - 1), i + 250);
-    const coords = chunk.map(p => `${p.la.toFixed(6)},${p.lo.toFixed(6)}`).join(',');
-    const q = `[out:json][timeout:40];way(around:30,${coords})[highway~"^(${HIGHWAYS})$"];out tags geom;`;
-    const json = await overpass(q);
-    for (const el of json.elements || []) if (el.type === 'way' && el.geometry) ways.set(el.id, el);
-  }
+  const chunks = [];
+  for (let i = 0; i < path.length; i += 120) chunks.push(path.slice(Math.max(0, i - 1), i + 120));
+  // smaller pieces, fetched side by side, come back much faster than one big query
+  const results = await Promise.all(chunks.map(chunk => {
+    const coords = chunk.map(p => `${p.la.toFixed(5)},${p.lo.toFixed(5)}`).join(',');
+    return overpass(`[out:json][timeout:18];way(around:25,${coords})[highway~"^(${HIGHWAYS})$"];out tags geom;`);
+  }));
+  for (const json of results) for (const el of json.elements || []) if (el.type === 'way' && el.geometry) ways.set(el.id, el);
   return [...ways.values()];
 }
 

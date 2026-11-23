@@ -1,7 +1,7 @@
 import * as store from './store.js';
 import { Recorder, finishDrive } from './recorder.js';
 import { analyse } from './analysis.js';
-import { computeLimits, TH_DEFAULTS } from './limits.js';
+import { computeLimits, defaultLimits, TH_DEFAULTS } from './limits.js';
 import { speedChart, gChart, xToIndex } from './charts.js';
 import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './share.js';
 import { directionsFor, googleMapsUrl } from './directions.js';
@@ -260,7 +260,7 @@ function recordView() {
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
   btn.addEventListener('contextmenu', e => e.preventDefault());
-  cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); map.remove(); };
+  cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); dropMap(map); };
 }
 
 // A single drive from a GPX or CSV file (ours or another logger's). Returns null for anything else.
@@ -319,12 +319,28 @@ async function ownDriveView(id) {
     return;
   }
   const save = async () => { drive.summary = analyse(drive.points, drive.limits).summary; await store.putDrive(drive); };
-  if (!drive.limits) {
-    view.innerHTML = `<p class="loading">Checking speed limits along your route…</p>`;
-    await ensureLimits(drive, save);
-  } else if (!drive.summary) await save();
+  // Show the drive straight away with Thai defaults, and look up posted limits in the background.
+  const needsLookup = !drive.limits || drive.limits.status === 'defaults' || drive.limits.status === 'pending';
+  if (!drive.limits) { drive.limits = { ...defaultLimits(drive.points), status: 'pending' }; await save(); }
+  else if (!drive.summary) await save();
   renderDrive(drive, { own: true, save });
+  if (needsLookup && !limitLookups.has(id)) {
+    limitLookups.add(id);
+    computeLimits(drive.points).then(async lim => {
+      limitLookups.delete(id);
+      if (lim.status !== 'osm' && drive.limits.status !== 'pending') return; // still offline: keep what we had
+      drive.limits = lim;
+      await save();
+      if (location.hash === '#/drive/' + encodeURIComponent(id) || location.hash === '#/drive/' + id) {
+        const y = window.scrollY;
+        await route();
+        window.scrollTo(0, y);
+        toast(lim.status === 'osm' ? 'Speed limits updated from OpenStreetMap.' : 'Couldn’t reach OpenStreetMap. Using Thai defaults.');
+      }
+    });
+  }
 }
+const limitLookups = new Set();
 
 async function sharedView(payload) {
   view.innerHTML = `<p class="loading">Opening shared link…</p>`;
@@ -343,7 +359,9 @@ function renderDrive(drive, { own, save }) {
   const A = analyse(drive.points, drive.limits);
   const S = A.summary;
   const lim = drive.limits || {};
-  const limitsNote = lim.status === 'defaults'
+  const limitsNote = lim.status === 'pending'
+    ? 'Checking OpenStreetMap for posted speed limits. Until then this uses Thai defaults (80 km/h in greater Bangkok, 90 outside), and the page updates by itself.'
+    : lim.status === 'defaults'
     ? 'Couldn’t reach OpenStreetMap, so every limit here is a Thai default (80 km/h in greater Bangkok, 90 outside).'
     : `About ${Math.round(S.osmShare * 100)}% of this route has a posted limit in OpenStreetMap; the rest uses Thai defaults (80 km/h in greater Bangkok, 90 outside). Limits are approximate.`;
   view.innerHTML = `
@@ -522,7 +540,7 @@ function renderDrive(drive, { own, save }) {
       location.hash = '#/';
     };
   }
-  cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); map.remove(); };
+  cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); };
 
   // other drives on the same route: yours, and friends' drives you've saved
   store.allDrives().then(all => {
@@ -653,7 +671,7 @@ function renderRace(group, fromHash) {
   $('#scrub').oninput = e => { stop(); t = +e.target.value; draw(); };
   $('#speed').onclick = e => { rate = rate === 20 ? 60 : rate === 60 ? 5 : 20; e.target.textContent = rate + '×'; };
   draw();
-  cleanup = () => { stop(); map.remove(); };
+  cleanup = () => { stop(); dropMap(map); };
 }
 
 function upperIdx(P, lo, hi, t) {
@@ -713,7 +731,7 @@ function renderRoute(r) {
     console.warn(e);
     $('#dir').innerHTML = `<li class="muted">Couldn't get directions right now (${esc(e.message)}). The map above and Google Maps still work.</li>`;
   });
-  cleanup = () => map.remove();
+  cleanup = () => dropMap(map);
 }
 
 // ---------- settings ----------
@@ -801,3 +819,10 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 route();
+
+// Leaflet finishes a zoom animation on a timer; removing the map before it fires throws.
+// So stop it now and remove it once any animation has had time to end.
+function dropMap(map) {
+  try { map.stop(); } catch {}
+  setTimeout(() => { try { map.off(); map.remove(); } catch {} }, 600);
+}
