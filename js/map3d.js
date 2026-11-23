@@ -4,17 +4,34 @@ import { loadMapLibre } from './livemap.js';
 import { loadStyle, styleNow, isVector, mapTheme, add3dBuildings, labelLayerId, RASTER_STYLE } from './basemap.js';
 import { bearing } from './analysis.js';
 
-export async function open3D(el) {
+// Pinch (or mouse wheel) that only changes how close the camera sits; the camera keeps following.
+export function pinchZoom(el, onDelta) {
+  let d0 = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  el.addEventListener('touchstart', e => { if (e.touches.length === 2) d0 = dist(e.touches); }, { passive: true });
+  el.addEventListener('touchmove', e => {
+    if (e.touches.length !== 2 || !d0) return;
+    e.preventDefault();
+    const d = dist(e.touches);
+    onDelta(Math.log2(d / d0));
+    d0 = d;
+  }, { passive: false });
+  el.addEventListener('touchend', e => { if (e.touches.length < 2) d0 = null; }, { passive: true });
+  el.addEventListener('wheel', e => { e.preventDefault(); onDelta(-e.deltaY / 300); }, { passive: false });
+}
+
+// autoCam: the camera is driven by the replay; fingers only zoom (no pan or turn that would fight it)
+export async function open3D(el, { autoCam = false } = {}) {
   const theme = mapTheme();
   await Promise.all([loadMapLibre(), loadStyle(theme)]);
-  const m = new Map3D(el, theme);
+  const m = new Map3D(el, theme, { autoCam });
   try { await Promise.race([m.ready, new Promise((_, no) => setTimeout(() => no(new Error('3D map timed out')), 12000))]); }
   catch (e) { m.remove(); throw e; }
   return m;
 }
 
 export class Map3D {
-  constructor(el, theme) {
+  constructor(el, theme, { autoCam = false } = {}) {
     const style = styleNow(theme);
     this.vector = isVector(style);
     this.theme = theme;
@@ -24,14 +41,16 @@ export class Map3D {
       attributionControl: { compact: true }, maxPitch: 85,
     });
     this.lines = 0;
-    // a pinch sets how close the chase camera sits from then on
     this.cam = 'heli';
-    this.map.on('zoomend', e => { if (e.originalEvent) this.manualZoom = this.map.getZoom(); });
-    // when a finger is on the map the camera holds off, then picks up again a few seconds later
-    this.touchedAt = 0;
-    const touched = e => { if (e.originalEvent) this.touchedAt = performance.now(); };
-    for (const ev of ['dragstart', 'drag', 'zoomstart', 'rotatestart', 'pitchstart']) this.map.on(ev, touched);
-    el.addEventListener('touchstart', () => { this.touchedAt = performance.now(); }, { passive: true });
+    this.zoomBias = 0; // set by pinching: how much closer (+) or further (−) than the camera's own choice
+    if (autoCam) {
+      for (const h of ['dragPan', 'dragRotate', 'scrollZoom', 'touchZoomRotate', 'touchPitch', 'doubleClickZoom', 'boxZoom', 'keyboard']) this.map[h]?.disable();
+      pinchZoom(el, d => {
+        this.zoomBias = Math.max(-4, Math.min(3, this.zoomBias + d));
+        this.map.jumpTo({ zoom: this.map.getZoom() + d });
+        if (this.onBias) this.onBias(this.zoomBias);
+      });
+    }
     this.ready = new Promise(res => this.map.once('style.load', () => {
       if (this.vector) add3dBuildings(this.map, theme, 0.9);
       this.before = this.vector ? labelLayerId(this.map) : undefined;
@@ -113,7 +132,7 @@ export class Map3D {
     const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: nb });
     if (!cam) return;
     const c = this.map.getCenter(), tc = maplibregl.LngLat.convert(cam.center);
-    const tz = Math.min(18, cam.zoom - 0.9);
+    const tz = Math.min(19, cam.zoom - 0.9 + this.zoomBias);
     // zoom in only for a real change, so it doesn't keep breathing in and out
     const goal = tz < z || tz - z > 0.35 ? tz : z;
     const kz = ease(goal < z ? 0.8 : 3), kc = ease(0.6);
@@ -144,7 +163,7 @@ export class Map3D {
     if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * ease(3);
     // pulls back a little as the speed rises, like a camera car keeping pace
     const pull = Math.min(1, (this.speed || 0) / 110) * 0.9;
-    const opts = { center: [lo, la], zoom: this.manualZoom ?? (chase ? 18.4 - pull : 17.4), pitch: chase ? 78 : 60, bearing: this.heading ?? this.map.getBearing() };
+    const opts = { center: [lo, la], zoom: Math.max(12, Math.min(20, (chase ? 18.4 - pull : 17.4) + this.zoomBias)), pitch: chase ? 78 : 60, bearing: this.heading ?? this.map.getBearing() };
     const el = this.map.getContainer();
     el.classList.toggle('cam-chase', chase);
     // the car sits low in the picture, with the road ahead filling the rest

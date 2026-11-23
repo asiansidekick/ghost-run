@@ -13,11 +13,11 @@ import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
-import { open3D } from './map3d.js';
+import { open3D, pinchZoom } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 4:30 AM';
+export const APP_VERSION = '24 Nov 2026, 5:00 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -642,14 +642,17 @@ function renderDrive(drive, { own, save }) {
     if ($('#v3d')) $('#v3d').textContent = VIEWS[mode];
     if (mode === '2d') return set3D(false);
     await set3D(true);
-    if (m3) { m3.cam = mode; m3.manualZoom = null; const p = A.pts[idx]; m3.follow([p.la, p.lo], idx ? prevOf(idx) : null, { duration: 600 }); }
+    if (m3) { m3.cam = mode; m3.zoomBias = 0; const p = A.pts[idx]; m3.follow([p.la, p.lo], idx ? prevOf(idx) : null, { duration: 600 }); }
   }
   async function set3D(on) {
     if (!$('#v3d')) return;
     if (!on) { if (m3) { m3.remove(); m3 = m3dot = m3trail = null; } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
     if (m3) return;
     $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
-    try { m3 = await open3D($('#map3d')); }
+    try {
+      m3 = await open3D($('#map3d'), { autoCam: true }); m3.cam = viewMode;
+      m3.onBias = () => { if (!playing && m3) { const p = A.pts[idx]; m3.follow([p.la, p.lo], idx ? prevOf(idx) : null, { duration: 1 }); } };
+    }
     catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); viewMode = '2d'; if ($('#v3d')) $('#v3d').textContent = VIEWS['2d']; return set3D(false); }
     if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
     m3.addLines(lines);
@@ -674,7 +677,7 @@ function renderDrive(drive, { own, save }) {
       trail.setLatLngs(idx ? A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]) : []);
       if (m3) {
         m3dot.setLatLng([p.la, p.lo]); m3trail.setLatLngs(A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]));
-        if (pan) { m3.touchedAt = 0; m3.follow([p.la, p.lo], prevOf(idx), { duration: 300 }); }
+        if (pan) { m3.follow([p.la, p.lo], prevOf(idx), { duration: 300 }); }
       }
     }
     dotEls().forEach(d => d.classList.toggle('over', !!p.over));
@@ -697,7 +700,6 @@ function renderDrive(drive, { own, save }) {
     playing = true;
     $('#play').textContent = '❚❚';
     dotEls().forEach(d => d.classList.add('moving'));
-    if (m3) m3.touchedAt = 0;
     let simT = A.pts[idx].t, lastFrame = performance.now();
     const trailPts = A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]);
     const frameFn = now => {
@@ -712,7 +714,7 @@ function renderDrive(drive, { own, save }) {
       if (m3) {
         m3dot.setLatLng(ll);
         m3trail.setLatLngs([...trailPts, ll]);
-        if (performance.now() - m3.touchedAt > 3000) m3.follow(ll, prevOf(j), { speed: a.v + f * (b.v - a.v) });
+        m3.follow(ll, prevOf(j), { speed: a.v + f * (b.v - a.v) });
       }
       setSpd(a.v + f * (b.v - a.v));
       gSoft = ease(gSoft, a.a + f * (b.a - a.a));
@@ -933,11 +935,8 @@ function renderRace(group, fromHash) {
   const firstNames = entries.map(e => e.label.split(',')[0]);
   const dupNames = new Set(firstNames).size < firstNames.length;
   let t = 0, playing = false, raf = null, rate = 20;
-  // keep everyone in view while it plays; a finger on the map turns that off until "Show everyone"
-  let autoFit = true, lastFit = 0;
-  let movedAt = 0;
-  const userMoved = () => { autoFit = false; movedAt = performance.now(); $('#fitAll').hidden = false; };
-  map.on('dragstart', userMoved);
+  // keep everyone in view while it plays; a pinch only sets how close the camera sits
+  let lastFit = 0;
   // 3D view: same lines and dots on a tilted map with buildings
   let m3 = null;
   async function set3D(on) {
@@ -947,24 +946,25 @@ function renderRace(group, fromHash) {
     if (!on) { if (m3) { m3.remove(); m3 = null; dots.forEach(d => { d.m3 = d.t3 = null; }); } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
     if (m3) return;
     $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
-    try { m3 = await open3D($('#map3d')); }
+    try { m3 = await open3D($('#map3d'), { autoCam: true }); m3.onBias = b => { $('#fitAll').hidden = b <= 0.3; if (!playing) kick(); }; }
     catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); return set3D(false); }
     if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
     m3.addLines(lines);
     dots.forEach(d => { d.t3 = m3.liveLine(d.e.color, 4, 0.9); d.m3 = m3.dot(d.html, [d.e.A.pts[d.e.i0].la, d.e.A.pts[d.e.i0].lo]); });
-    // the camera moves every frame, which stops the map's own drag events, so watch the finger directly
-    { const c = m3.map.getCanvasContainer(); let x0 = null, y0 = 0;
-      c.addEventListener('pointerdown', e => { x0 = e.clientX; y0 = e.clientY; });
-      c.addEventListener('pointermove', e => { if (x0 != null && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) { x0 = null; userMoved(); } });
-      c.addEventListener('pointerup', () => { x0 = null; });
-      c.addEventListener('wheel', userMoved, { passive: true }); }
     m3.fit(lines.flatMap(l => l.coords), { padding: 40 });
     lastFit = 0;
     draw();
-    if (autoFit) fitAll(true);
+    fitAll(true);
   }
   if ($('#v3d')) $('#v3d').onclick = () => set3D(!m3);
-  $('#fitAll').onclick = () => { autoFit = true; lastFit = 0; $('#fitAll').hidden = true; fitAll(true); };
+  $('#fitAll').onclick = () => { lastFit = 0; bias2d = 0; if (m3) m3.zoomBias = 0; $('#fitAll').hidden = true; fitAll(true); };
+  // when paused, keep the camera moving for a moment so a pinch shows straight away
+  let kickT = 0;
+  function kick() { const until = performance.now() + 900; const step = () => { if (playing) return; fitAll(false); if (performance.now() < until) kickT = requestAnimationFrame(step); }; cancelAnimationFrame(kickT); kickT = requestAnimationFrame(step); }
+  // flat map: fingers only zoom too, and the camera keeps following
+  let bias2d = 0;
+  for (const h of ['dragging', 'touchZoom', 'scrollWheelZoom', 'doubleClickZoom', 'boxZoom', 'keyboard']) map[h]?.disable();
+  pinchZoom($('#map'), d => { bias2d = Math.max(-4, Math.min(3, bias2d + d)); $('#fitAll').hidden = bias2d <= 0.3; if (!playing) kick(); });
   function fitAll(force) {
     const live = dots.map(({ e }) => positionAt(e, t)).filter(p => !p.done);
     const pts = (live.length ? live : dots.map(({ e }) => positionAt(e, t))).map(p => [p.la, p.lo]);
@@ -986,7 +986,7 @@ function renderRace(group, fromHash) {
       const ease = tau => 1 - Math.exp(-dt / tau);
       const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
       const bb = L.latLngBounds([...pts, ...ahead]);
-      const tz = Math.min(17, map.getBoundsZoom(bb, false, L.point(80, 100)));
+      const tz = Math.min(19, map.getBoundsZoom(bb, false, L.point(80, 100)) + bias2d);
       const z = map.getZoom(), c = map.getCenter(), tc = bb.getCenter();
       const kz = ease(tz < z ? 0.35 : 1.4), kc = ease(0.3);
       map.setView([c.lat + (tc.lat - c.lat) * kc, c.lng + (tc.lng - c.lng) * kc], z + (tz - z) * kz, { animate: false });
@@ -1037,16 +1037,13 @@ function renderRace(group, fromHash) {
   $('#play').onclick = () => {
     if (playing) return stop();
     if (t >= maxMs) t = 0;
-    autoFit = true; $('#fitAll').hidden = true;
     playing = true; $('#play').textContent = '❚❚';
     let last = performance.now();
     const frameFn = now => {
       if (!playing) return;
       t = Math.min(maxMs, t + (now - last) * rate); last = now;
       draw();
-      // after a few seconds hands-off, the camera takes over again
-      if (!autoFit && performance.now() - movedAt > 5000) { autoFit = true; $('#fitAll').hidden = true; if (m3) m3.resetTrack(); }
-      if (autoFit) fitAll(false);
+      fitAll(false);
       if (t >= maxMs) { stop(); return; }
       raf = requestAnimationFrame(frameFn);
     };
