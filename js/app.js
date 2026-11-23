@@ -9,6 +9,8 @@ import { gpx, csv, saveFile } from './export.js';
 import { sampleDrive } from './sample.js';
 import { compareGroup, positionAt } from './compare.js';
 import { guideFromDrive, guideFromRoute } from './guide.js';
+import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
+import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 
 const BANGKOK = [13.7563, 100.5018];
 const $ = (s, el = document) => el.querySelector(s);
@@ -52,7 +54,10 @@ async function route() {
   const h = location.hash;
   try {
     if (h.startsWith('#s=') || h.startsWith('#r=')) return await sharedView(h.slice(3));
-    if (h === '#/record') return recordView();
+    if (h === '#/record') {
+      if (recorder.active && webglOk()) { try { await loadMapLibre(); } catch {} }
+      return recordView();
+    }
     if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
     if (h === '#/settings') return settingsView();
     if (h.startsWith('#/route/')) { const r = await store.getDrive(decodeURIComponent(h.slice(8))); if (r) return renderRoute(r); location.hash = '#/'; return; }
@@ -135,9 +140,16 @@ async function homeView() {
 
 // ---------- record ----------
 let pendingGuide = null;
+const voice = new Voice();
+const turnsCache = new WeakMap();
+function getTurns(guide) {
+  if (!turnsCache.has(guide)) turnsCache.set(guide, turnsFor(guide.points));
+  return turnsCache.get(guide);
+}
 function followGuide(guide) {
   if (recorder.active) { toast('Stop the current drive first.'); return; }
   pendingGuide = guide;
+  getTurns(guide); // start working out the turns while you get ready
   if (location.hash === '#/record') route(); else location.hash = '#/record';
 }
 
@@ -161,7 +173,12 @@ function recordView() {
       </section>
       <button class="btn big start" id="go">Start</button>`;
     if ($('#nofollow')) $('#nofollow').onclick = () => { pendingGuide = null; recordView(); };
-    $('#go').onclick = () => { recorder.start(null, pendingGuide); pendingGuide = null; recordView(); };
+    $('#go').onclick = () => {
+      if (pendingGuide) voice.unlock();
+      recorder.start(null, pendingGuide); pendingGuide = null;
+      if (webglOk()) loadMapLibre().catch(() => {}).then(() => { if (location.hash === '#/record') recordView(); });
+      else recordView();
+    };
     return;
   }
   const g = recorder.guide;
@@ -178,30 +195,44 @@ function recordView() {
       <div class="live-map-wrap">
         <div id="lmap" class="live-map"></div>
         <button class="btn small ghost recenter" id="recenter" hidden>Re-centre</button>
-        ${g ? `<div class="guide-hud" id="gh"></div>` : ''}
+        <button class="btn small ghost mapmode-btn" id="mapmode" aria-label="Switch map view"></button>
+        ${g ? `<div class="turn-banner" id="tb"><span class="tb-arrow">…</span><span class="tb-text">Working out the turns…</span></div>
+        <button class="btn small ghost voice-btn" id="voice" aria-label="Voice on or off"></button>
+        <div class="guide-hud" id="gh"></div>` : ''}
       </div>
-      <div class="live-flags" id="lf"></div>
+      <div class="live-flags ${g ? 'compact' : ''}" id="lf"></div>
       <button class="btn big hold" id="stop"><span class="hold-fill"></span><span class="hold-label">Hold to stop</span></button>
     </section>`;
-  const map = newMap($('#lmap'));
   const blue = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
-  let guideLine = null;
-  if (g) {
-    guideLine = L.polyline(g.points.map(p => [p.la, p.lo]), { color: '#a78bfa', weight: 9, opacity: 0.45 }).addTo(map);
-    const gp = g.points;
-    L.circleMarker([gp[0].la, gp[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).addTo(map);
-    L.circleMarker([gp[gp.length - 1].la, gp[gp.length - 1].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).addTo(map);
-  }
-  const trail = L.polyline(recorder.track, { color: blue, weight: 5 }).addTo(map);
-  const me = L.marker(recorder.last ? [recorder.last.la, recorder.last.lo] : BANGKOK, { icon: dotIcon(blue), zIndexOffset: 1000, interactive: false }).addTo(map);
-  const ghost = g && g.points[0].t != null
-    ? L.marker([g.points[0].la, g.points[0].lo], { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot ghost-dot" style="--c:#e2e8f0"><i></i><span class="spd">Ghost</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 900, interactive: false }).addTo(map)
-    : null;
-  if (recorder.last) map.setView([recorder.last.la, recorder.last.lo], 16);
-  else if (guideLine) map.fitBounds(guideLine.getBounds(), { padding: [20, 20] });
   let follow = true;
-  map.on('dragstart', () => { follow = false; $('#recenter').hidden = false; });
-  $('#recenter').onclick = () => { follow = true; $('#recenter').hidden = true; if (recorder.last) map.setView([recorder.last.la, recorder.last.lo], Math.max(map.getZoom(), 16)); };
+  const userMoved = () => { follow = false; $('#recenter').hidden = false; };
+  const startLL = recorder.last ? [recorder.last.la, recorder.last.lo] : g ? [g.points[0].la, g.points[0].lo] : BANGKOK;
+  const map = window.maplibregl && webglOk() ? new LiveMap($('#lmap'), { center: startLL, onUserMove: userMoved }) : new FlatLiveMap($('#lmap'), { center: startLL, onUserMove: userMoved });
+  map.mode = store.settings().mapMode || 'pov';
+  if (g) map.setGuide(g.points);
+  map.setTrail(recorder.track);
+  if (!recorder.last && g) map.fitPoints(g.points.map(p => [p.la, p.lo]));
+  const mb = $('#mapmode');
+  if (map instanceof FlatLiveMap) mb.hidden = true;
+  const showMode = () => { mb.textContent = map.mode === 'pov' ? '3D' : 'N↑'; mb.title = map.mode === 'pov' ? 'Heading up, tilted' : 'North up'; };
+  showMode();
+  mb.onclick = () => {
+    map.mode = map.mode === 'pov' ? 'north' : 'pov';
+    store.saveSettings({ ...store.settings(), mapMode: map.mode });
+    showMode(); follow = true; $('#recenter').hidden = true;
+    if (recorder.last) map.follow([recorder.last.la, recorder.last.lo], g ? lookAhead() : null);
+  };
+  const ghostOn = g && g.points[0].t != null;
+  $('#recenter').onclick = () => { follow = true; $('#recenter').hidden = true; if (recorder.last) map.follow([recorder.last.la, recorder.last.lo], g ? lookAhead() : null); };
+  let turns = null, turnSource = null;
+  if (g) {
+    getTurns(g).then(t => { turns = t.turns; turnSource = t.source; upd(); });
+    const vb = $('#voice');
+    const showVoice = () => { vb.textContent = voice.on ? '🔊' : '🔇'; };
+    voice.on = store.settings().voiceOn !== false;
+    showVoice();
+    vb.onclick = () => { voice.on = !voice.on; store.saveSettings({ ...store.settings(), voiceOn: voice.on }); showVoice(); if (voice.on) voice.say('Voice on'); };
+  }
   let lastCount = -1;
   const upd = () => {
     if (!recorder.active) return;
@@ -214,16 +245,33 @@ function recordView() {
       recorder.motionOk ? 'Motion sensor on' : 'Using GPS for braking',
     ].map(t => `<span>${t}</span>`).join('');
     if (recorder.count !== lastCount && recorder.last) {
-      const first = lastCount <= 0;
       lastCount = recorder.count;
       const ll = [recorder.last.la, recorder.last.lo];
-      me.setLatLng(ll);
-      const sp = me.getElement()?.querySelector('.spd'); if (sp) sp.textContent = Math.round(recorder.speedKmh);
-      trail.setLatLngs(recorder.track);
-      if (follow) first ? map.setView(ll, 16) : map.panTo(ll, { animate: true, duration: 0.5 });
+      if (recorder.speedKmh > 4) map.updateHeading(recorder.gpsHeading, recorder.track);
+      const overNow = false;
+      map.setMe(ll, Math.round(recorder.speedKmh), overNow);
+      map.setTrail(recorder.track);
+      if (follow) map.follow(ll, g ? lookAhead() : null);
     }
     if (g) {
       const st = recorder.guideState;
+      const tb = $('#tb');
+      const nt = nextTurn();
+      if (!st || !st.started) {
+        tb.className = 'turn-banner';
+        tb.innerHTML = `<span class="tb-arrow">⌖</span><span class="tb-text"><b>Head to the start</b>${st && st.distToStart != null ? `<small>${fmtKm(st.distToStart)} away, green dot on the map</small>` : ''}</span>`;
+      } else if (st.off) {
+        tb.className = 'turn-banner off';
+        tb.innerHTML = `<span class="tb-arrow">⚠</span><span class="tb-text"><b>Off the route</b><small>Get back to the yellow line</small></span>`;
+      } else if (nt) {
+        tb.className = 'turn-banner' + (nt.dist < 120 ? ' soon' : '');
+        const then = turns[turns.indexOf(nt.turn) + 1];
+        tb.innerHTML = `<span class="tb-arrow">${arrowFor(nt.turn)}</span><span class="tb-text"><b>${roundDist(nt.dist)}</b><small>${esc(nt.turn.text)}</small>${then && then.at - nt.turn.at < 1500 ? `<em>then ${arrowFor(then)} ${esc(lowerFirst(then.text))}</em>` : ''}</span>`;
+        voice.update(nt.turn, nt.dist, recorder.speedKmh);
+      } else if (!turns) {
+        tb.className = 'turn-banner';
+        tb.innerHTML = `<span class="tb-arrow">…</span><span class="tb-text">Working out the turns…</span>`;
+      }
       let html;
       if (!st || !st.started) html = `<b>Head to the start</b><span>${st && st.distToStart != null ? fmtKm(st.distToStart) + ' away' : 'Waiting for GPS'}</span>`;
       else if (st.finished) html = `<b>🏁 Route done</b>${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
@@ -231,15 +279,36 @@ function recordView() {
       $('#gh').innerHTML = html;
     }
   };
+  function progress() {
+    const tr = recorder.tracker, st = recorder.guideState;
+    return tr && st && st.started ? tr.cum[st.idx] : null;
+  }
+  function nextTurn() {
+    const at = progress();
+    if (at == null || !turns) return null;
+    const turn = turns.find(t => t.at > at + 5);
+    return turn ? { turn, dist: turn.at - at } : null;
+  }
+  // what the map should keep in view besides you: the start, the next turn, or the road 400 m ahead
+  function lookAhead() {
+    const st = recorder.guideState, tr = recorder.tracker;
+    if (!tr) return null;
+    if (!st || !st.started) return [g.points[0].la, g.points[0].lo];
+    if (st.off) return null;
+    const nt = nextTurn();
+    if (nt && nt.dist < 600) return [nt.turn.la, nt.turn.lo];
+    const target = tr.cum[st.idx] + 400;
+    let i = st.idx;
+    while (i < tr.cum.length - 1 && tr.cum[i] < target) i++;
+    return [g.points[i].la, g.points[i].lo];
+  }
   // the ghost glides between updates, timed from the latest GPS fix
-  const ghostTick = ghost ? setInterval(() => {
+  const ghostTick = ghostOn ? setInterval(() => {
     const tr = recorder.tracker;
     if (!tr || !recorder.last || recorder.lastFixAt == null) return;
     const gp = tr.ghostAt(recorder.last.t + (Date.now() - recorder.lastFixAt));
     if (!gp) return;
-    ghost.setLatLng([gp.la, gp.lo]);
-    const sp = ghost.getElement()?.querySelector('.spd');
-    if (sp) sp.textContent = gp.done ? 'Ghost 🏁' : `Ghost ${Math.round(gp.v)}`;
+    map.setGhost([gp.la, gp.lo], gp.done ? 'Ghost 🏁' : `Ghost ${Math.round(gp.v)}`);
   }, 250) : null;
   const tick = setInterval(() => { if (recorder.startedAt) $('#lt').textContent = fmtClock(Date.now() - recorder.startedAt); }, 1000);
   recorder.addEventListener('update', upd);
@@ -260,7 +329,7 @@ function recordView() {
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
   btn.addEventListener('contextmenu', e => e.preventDefault());
-  cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); dropMap(map); };
+  cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); map.remove(); };
 }
 
 // A single drive from a GPX or CSV file (ours or another logger's). Returns null for anything else.
@@ -294,6 +363,8 @@ function importTrack(text, filename = '') {
   pts.sort((a, b) => a.t - b.t);
   return { id, status: 'done', name: name || 'Imported drive', startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts };
 }
+
+const lowerFirst = t => t.charAt(0).toLowerCase() + t.slice(1);
 
 function fmtGap(s) {
   const a = Math.abs(Math.round(s));

@@ -97,6 +97,7 @@ export class Recorder extends EventTarget {
     this.speedKmh = kmh;
     this.last = p;
     this.lastFixAt = Date.now();
+    this.gpsHeading = c.heading != null && !isNaN(c.heading) && kmh > 5 ? c.heading : null;
     this.track.push([p.la, p.lo]);
     if (this.tracker) this.guideState = this.tracker.update(p);
     this.buf.push(p);
