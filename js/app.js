@@ -13,6 +13,7 @@ import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 
 const BANGKOK = [13.7563, 100.5018];
+export const APP_VERSION = '23 Nov 2026, 6:15 PM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -835,6 +836,7 @@ function settingsView() {
       <p class="muted small">Restore takes a backup file, or a single drive exported as GPX or CSV (from this app or another GPS logger).</p>
       <button class="btn danger" id="wipe">Delete all my drives</button>
     </section>
+    <p class="muted small">Version: ${APP_VERSION}. If this looks older than expected, close the app fully and open it again.</p>
     <p class="muted small">Maps and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM.</p>`;
   const persist = () => store.saveSettings({ name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value });
   ['#sname', '#strim', '#sauto'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
