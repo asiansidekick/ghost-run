@@ -234,3 +234,23 @@ h2 { font-size: 1.1rem; }
 .guide-hud { bottom: 30px; right: 64px; left: 8px; padding: 6px 10px; font-size: 0.95rem; flex-wrap: nowrap; }
 .guide-hud span { white-space: nowrap; }
 .me-arrow { transition: transform 0.4s linear; }
+
+/* ghost panel tint: ahead green, behind red */
+.guide-hud.ahead { background: rgba(22, 163, 74, 0.6); border-color: #4ade80; }
+.guide-hud.behind { background: rgba(220, 38, 38, 0.6); border-color: #f87171; }
+.guide-hud.ahead .good, .guide-hud.behind .bad, .guide-hud.ahead b, .guide-hud.behind b { color: #fff; }
+
+/* picking drives to play together */
+.list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.list-head .section-title { margin-bottom: 8px; }
+.pickable { display: flex; align-items: center; gap: 10px; }
+.pickable .drive-item { flex: 1; min-width: 0; }
+.pick-box { display: none; width: 24px; height: 24px; flex: none; accent-color: var(--accent); margin-bottom: 10px; }
+.picking .pick-box { display: block; }
+.picking .drive-item { pointer-events: none; opacity: 0.9; }
+.pick-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1500; display: flex; gap: 8px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); background: rgba(15, 17, 21, 0.96); border-top: 1px solid var(--border); }
+.pick-bar .btn { flex: 1; }
+.picking { padding-bottom: 96px; }
+.cmp-list.pick li { grid-template-columns: 52px 1fr auto auto; }
+.cmp-check { display: flex; align-items: center; gap: 4px; }
+.cmp-check input { width: 20px; height: 20px; accent-color: var(--accent); }

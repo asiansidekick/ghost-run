@@ -1,5 +1,5 @@
 // Offline support: the app itself is cached; map tiles and road data always come from the network.
-const VERSION = 'sl-v11';
+const VERSION = 'sl-v12';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/analysis.js', 'js/charts.js', 'js/compare.js', 'js/directions.js', 'js/export.js', 'js/guide.js', 'js/turns.js', 'js/livemap.js',

@@ -13,7 +13,7 @@ import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '23 Nov 2026, 6:15 PM';
+export const APP_VERSION = '23 Nov 2026, 6:40 PM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -107,10 +107,10 @@ async function homeView() {
     ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
         <div class="drive-name">${esc(r.name)}</div>
         <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
-    <h2 class="section-title">My drives</h2>
+    <div class="list-head"><h2 class="section-title">My drives</h2>${done.length > 1 ? `<button class="btn small ghost" id="pickMode">Play together</button>` : ''}</div>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
-      return `<li><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
+      return `<li class="pickable"><input type="checkbox" class="pick-box" data-id="${esc(d.id)}" aria-label="Pick this drive"><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
         <div class="drive-name">${esc(driveTitle(d))}</div>
         <div class="drive-meta">${d.guide ? `Followed ${esc(d.guide.name)} · ` : ''}${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
         ${A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
@@ -131,6 +131,30 @@ async function homeView() {
     if (d && d.points.length < 2) { await store.deleteDrive(d.id); route(); return; }
     location.hash = '#/drive/' + b.dataset.finish;
   });
+  const pm = $('#pickMode');
+  if (pm) {
+    const bar = document.createElement('div');
+    bar.className = 'pick-bar'; bar.hidden = true;
+    bar.innerHTML = `<button class="btn ghost" id="pickCancel">Cancel</button><button class="btn" id="pickPlay" disabled>Pick 2 or more</button>`;
+    view.appendChild(bar);
+    const picks = () => [...view.querySelectorAll('.pick-box:checked')].map(b => b.dataset.id);
+    const sync = () => {
+      const n = picks().length;
+      view.querySelectorAll('.pick-box').forEach(b => { b.disabled = !b.checked && n >= RACE_COLORS.length; });
+      $('#pickPlay').disabled = n < 2;
+      $('#pickPlay').textContent = n < 2 ? 'Pick 2 or more' : `▶ Play ${n} drives`;
+    };
+    pm.onclick = () => { view.classList.add('picking'); bar.hidden = false; pm.hidden = true; sync(); };
+    $('#pickCancel').onclick = () => { view.classList.remove('picking'); bar.hidden = true; pm.hidden = false; };
+    view.querySelectorAll('.pick-box').forEach(b => b.onchange = sync);
+    $('#pickPlay').onclick = async () => {
+      const ids = picks();
+      const chosen = done.filter(d => ids.includes(d.id));
+      view.classList.remove('picking');
+      renderRace(groupForSelection(chosen));
+    };
+    cleanup = () => view.classList.remove('picking');
+  }
   const sb = $('#sample');
   if (sb) sb.onclick = async () => {
     await store.putDrive(sampleDrive());
@@ -278,6 +302,8 @@ function recordView() {
       else if (st.finished) html = `<b>🏁 Route done</b>${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
       else html = `${st.off ? `<b class="bad">Off the route (${fmtKm(st.offBy)})</b>` : `<b>${fmtKm(st.remaining)} to go</b>`}${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
       $('#gh').innerHTML = html;
+      const tint = st && st.started && !st.off && st.deltaS != null && Math.abs(st.deltaS) >= 1 ? (st.deltaS < 0 ? ' ahead' : ' behind') : '';
+      $('#gh').className = 'guide-hud' + tint;
     }
   };
   function progress() {
@@ -446,6 +472,7 @@ function renderDrive(drive, { own, save }) {
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
+      <button class="btn small ghost" id="rspeed" aria-label="Replay speed">20×</button>
     </div>
     <div class="readout" id="readout"></div>
     <div class="legend"><span><i class="sw blue"></i>Under the limit</span><span><i class="sw red"></i>Over the limit</span><span><i class="sw gap"></i>Recording gap</span><span><i class="dot orange"></i>Hard braking or acceleration</span></div>
@@ -542,8 +569,9 @@ function renderDrive(drive, { own, save }) {
   scrub.oninput = () => { stopPlay(); setIdx(+scrub.value, true); };
   const onChart = c => e => { stopPlay(); setIdx(xToIndex(c, A, e.clientX), true); };
   for (const c of [cs, cg]) { c.addEventListener('pointerdown', onChart(c)); c.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') onChart(c)(e); }); }
-  // replay at 20× real time; the dot glides between GPS fixes and leaves a trail
-  let playing = false, raf = null;
+  // replay (20× real time to start); the dot glides between GPS fixes and leaves a trail
+  let playing = false, raf = null, rate = 20;
+  $('#rspeed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   const stopPlay = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; dotEl()?.classList.remove('moving'); };
   $('#play').onclick = () => {
     if (playing) return stopPlay();
@@ -555,7 +583,7 @@ function renderDrive(drive, { own, save }) {
     const trailPts = A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]);
     const frameFn = now => {
       if (!playing) return;
-      simT += (now - lastFrame) * 20; lastFrame = now;
+      simT += (now - lastFrame) * rate; lastFrame = now;
       let j = idx;
       while (j < A.pts.length - 1 && A.pts[j + 1].t <= simT) { j++; trailPts.push([A.pts[j].la, A.pts[j].lo]); }
       const a = A.pts[j], b = A.pts[Math.min(j + 1, A.pts.length - 1)];
@@ -624,7 +652,7 @@ function renderDrive(drive, { own, save }) {
       box.innerHTML = `<p class="muted small same-empty">No other drives on this route yet. Share the route with a friend; when they drive it and send you their drive, save it and you can race the two here.</p>`;
       return;
     }
-    renderCompareList(box, group, () => renderRace(group));
+    renderCompareList(box, group, g2 => renderRace(g2));
   });
 }
 
@@ -640,16 +668,45 @@ function renderCompareList(box, group, onRace) {
     <h2 class="section-title">Same route</h2>
     <section class="card">
       <p class="small muted">Times over the ${fmtKm(group.stretchM)} stretch every drive below covers, fastest first. A red mark means part of that time was over the limit.</p>
-      <ol class="cmp-list">${group.entries.map((e, k) => `
+      <ol class="cmp-list pick">${group.entries.map((e, k) => `
         <li class="${e.isRef ? 'me' : ''}">
-          <span class="cmp-pos">${k + 1}</span>
+          <label class="cmp-check"><input type="checkbox" data-k="${k}" ${k < RACE_COLORS.length ? 'checked' : ''}><span class="cmp-pos">${k + 1}</span></label>
           <span class="cmp-name">${esc(e.label)}${e.isRef ? ' <em>(this drive)</em>' : ''}</span>
           <span class="cmp-time">${fmtClock(e.ms)}${k ? `<small>+${fmtClock(e.ms - best)}</small>` : ''}</span>
           <span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span>
         </li>`).join('')}</ol>
       <button class="btn" id="raceBtn">▶ Race replay</button>
+      <p class="muted small">Tick the drives to include, up to ${RACE_COLORS.length}.</p>
     </section>`;
-  $('#raceBtn', box).onclick = onRace;
+  const boxes = [...box.querySelectorAll('input[data-k]')];
+  const sync = () => {
+    const n = boxes.filter(b => b.checked).length;
+    boxes.forEach(b => { b.disabled = !b.checked && n >= RACE_COLORS.length; });
+    $('#raceBtn', box).disabled = n < 1;
+    $('#raceBtn', box).textContent = n > 1 ? `▶ Race ${n} drives` : '▶ Replay';
+  };
+  boxes.forEach(b => b.onchange = sync);
+  sync();
+  $('#raceBtn', box).onclick = () => {
+    const picked = boxes.filter(b => b.checked).map(b => group.entries[+b.dataset.k]);
+    onRace({ ...group, entries: picked });
+  };
+}
+
+function groupForSelection(drives) {
+  const me = store.settings().name;
+  const [ref, ...rest] = drives;
+  const g = compareGroup(ref, rest, me);
+  if (g && g.entries.length === drives.length) return { ...g, sameRoute: true };
+  const entries = drives.map(d => {
+    const A = analyse(d.points, d.limits);
+    const n = d.points.length - 1;
+    return {
+      drive: d, A, i0: 0, i1: n, ms: d.points[n].t - d.points[0].t, dist: A.summary.distance,
+      label: (d.from ? d.from + ': ' : '') + driveTitle(d), isRef: false, redCount: A.speeding.length,
+    };
+  }).sort((a, b) => a.drive.startedAt - b.drive.startedAt);
+  return { entries, sameRoute: false };
 }
 
 async function raceFromStore(id) {
@@ -672,7 +729,7 @@ function renderRace(group, fromHash) {
   view.innerHTML = `
     <div class="race-head">
       <button class="btn small ghost" id="back">‹ Back</button>
-      <h1>Race replay</h1>
+      <h1>${group.sameRoute === false ? 'Playback' : 'Race replay'}</h1>
     </div>
     <div class="race-wrap">
       <div class="map race-map" id="map"></div>
@@ -684,21 +741,35 @@ function renderRace(group, fromHash) {
       <input type="range" id="scrub" min="0" max="${maxMs}" value="0" step="250" aria-label="Race position">
       <button class="btn small ghost" id="speed">20×</button>
     </div>
-    <p class="muted small">Everyone starts together at the start of the shared stretch (${fmtKm(group.stretchM)}). Drives were made at different times, so traffic and lights differ.</p>
+    <p class="muted small">${group.sameRoute === false
+      ? 'These drives cover different roads, so each one plays from its own start, all at the same time.'
+      : `Everyone starts together at the start of the shared stretch (${fmtKm(group.stretchM)}). Drives were made at different times, so traffic and lights differ.`}</p>
     <section class="card"><ol class="cmp-list">${entries.map((e, k) => `
       <li><span class="cmp-pos" style="background:${e.color}">${k + 1}</span><span class="cmp-name">${esc(e.label)}</span>
       <span class="cmp-time">${fmtClock(e.ms)}</span><span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span></li>`).join('')}</ol></section>`;
-  $('#back').onclick = () => { if (fromHash || !refId) history.back(); else route(); };
+  $('#back').onclick = () => { if (fromHash) history.back(); else route(); };
   const map = newMap($('#map'));
   const refE = entries.find(e => e.isRef) || entries[0];
-  const stretch = refE.A.pts.slice(refE.i0, refE.i1 + 1).map(p => [p.la, p.lo]);
-  L.polyline(stretch, { color: '#94a3b8', weight: 8, opacity: 0.35 }).addTo(map);
-  map.fitBounds(L.latLngBounds(stretch), { padding: [30, 30] });
+  if (group.sameRoute === false) {
+    const all = [];
+    for (const e of entries) {
+      const ll = e.A.pts.map(p => [p.la, p.lo]);
+      all.push(...ll);
+      L.polyline(ll, { color: e.color, weight: 6, opacity: 0.3 }).addTo(map);
+    }
+    map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+  } else {
+    const stretch = refE.A.pts.slice(refE.i0, refE.i1 + 1).map(p => [p.la, p.lo]);
+    L.polyline(stretch, { color: '#94a3b8', weight: 8, opacity: 0.35 }).addTo(map);
+    map.fitBounds(L.latLngBounds(stretch), { padding: [30, 30] });
+  }
   const dots = entries.map((e, k) => {
     const trail = L.polyline([], { color: e.color, weight: 4, opacity: 0.9 }).addTo(map);
     const m = L.marker([e.A.pts[e.i0].la, e.A.pts[e.i0].lo], { icon: L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot race${k % 2 ? " alt" : ""}" style="--c:${e.color}"><i></i><b>${k + 1}</b><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000 - k, interactive: false }).addTo(map);
     return { e, trail, m };
   });
+  const firstNames = entries.map(e => e.label.split(',')[0]);
+  const dupNames = new Set(firstNames).size < firstNames.length;
   let t = 0, playing = false, raf = null, rate = 20;
   const draw = () => {
     $('#clock').textContent = fmtClock(t);
@@ -715,14 +786,14 @@ function renderRace(group, fromHash) {
       trail.setLatLngs([...P.slice(e.i0, end + 1).map(q => [q.la, q.lo]), [p.la, p.lo]]);
       return { e, p };
     });
-    rows.sort((a, b) => (b.p.done - a.p.done) || (a.p.done ? a.e.ms - b.e.ms : b.p.prog - a.p.prog));
+    if (group.sameRoute !== false) rows.sort((a, b) => (b.p.done - a.p.done) || (a.p.done ? a.e.ms - b.e.ms : b.p.prog - a.p.prog));
     const lead = rows[0];
     $('#hud').innerHTML = rows.map(({ e, p }, k) => `
       <div class="hud-row ${p.over && !p.done ? 'over' : ''}">
         <i style="background:${e.color}"></i>
-        <span class="hud-name">${esc(e.label.split(',')[0])}</span>
+        <span class="hud-name">${esc(group.sameRoute === false || dupNames ? e.label : e.label.split(',')[0])}</span>
         <span class="hud-val">${p.done ? `🏁 ${fmtClock(e.ms)}` : `${Math.round(p.v)} km/h`}</span>
-        <span class="hud-gap">${k === 0 ? 'lead' : p.done ? '' : `−${fmtKm(Math.max(0, lead.p.prog - p.prog))}`}</span>
+        <span class="hud-gap">${group.sameRoute === false ? fmtKm(p.prog) : k === 0 ? 'lead' : p.done ? '' : `−${fmtKm(Math.max(0, lead.p.prog - p.prog))}`}</span>
       </div>`).join('');
   };
   const stop = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; };
@@ -741,10 +812,13 @@ function renderRace(group, fromHash) {
     raf = requestAnimationFrame(frameFn);
   };
   $('#scrub').oninput = e => { stop(); t = +e.target.value; draw(); };
-  $('#speed').onclick = e => { rate = rate === 20 ? 60 : rate === 60 ? 5 : 20; e.target.textContent = rate + '×'; };
+  $('#speed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   draw();
   cleanup = () => { stop(); dropMap(map); };
 }
+
+const RATES = [1, 5, 10, 20, 60];
+const nextRate = r => RATES[(RATES.indexOf(r) + 1) % RATES.length];
 
 function upperIdx(P, lo, hi, t) {
   // number of fixes after lo with time <= t
