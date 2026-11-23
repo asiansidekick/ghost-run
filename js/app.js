@@ -14,7 +14,7 @@ import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '23 Nov 2026, 11:00 PM';
+export const APP_VERSION = '23 Nov 2026, 11:30 PM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -112,7 +112,7 @@ async function homeView() {
     ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
         <div class="drive-name">${esc(r.name)}</div>
         <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
-    <div class="list-head"><h2 class="section-title">My drives</h2>${done.length > 1 ? `<button class="btn small ghost" id="pickMode">Play together</button>` : ''}</div>
+    <div class="list-head"><h2 class="section-title">My drives</h2>${done.length ? `<button class="btn small ghost" id="pickMode">Select</button>` : ''}</div>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
       return `<li class="pickable"><input type="checkbox" class="pick-box" data-id="${esc(d.id)}" aria-label="Pick this drive"><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
@@ -140,18 +140,51 @@ async function homeView() {
   if (pm) {
     const bar = document.createElement('div');
     bar.className = 'pick-bar'; bar.hidden = true;
-    bar.innerHTML = `<button class="btn ghost" id="pickCancel">Cancel</button><button class="btn" id="pickPlay" disabled>Pick 2 or more</button>`;
+    bar.innerHTML = `<button class="btn ghost" id="pickCancel">Cancel</button><button class="btn danger" id="pickDel" disabled>Delete</button><button class="btn" id="pickPlay" disabled>Play</button>`;
     view.appendChild(bar);
     const picks = () => [...view.querySelectorAll('.pick-box:checked')].map(b => b.dataset.id);
     const sync = () => {
       const n = picks().length;
       view.querySelectorAll('.pick-box').forEach(b => { b.disabled = !b.checked && n >= RACE_COLORS.length; });
       $('#pickPlay').disabled = n < 2;
-      $('#pickPlay').textContent = n < 2 ? 'Pick 2 or more' : `▶ Play ${n} drives`;
+      $('#pickPlay').textContent = n < 2 ? 'Play 2+' : `▶ Play ${n}`;
+      $('#pickDel').disabled = n < 1;
+      $('#pickDel').textContent = n ? `Delete ${n}` : 'Delete';
     };
     pm.onclick = () => { view.classList.add('picking'); bar.hidden = false; pm.hidden = true; sync(); };
+    // press and hold a drive: start selecting (to delete or play together), with that one ticked
+    view.querySelectorAll('.pickable').forEach(li => {
+      const a = li.querySelector('.drive-item'), box = li.querySelector('.pick-box');
+      let t = null, held = false, x0 = 0, y0 = 0;
+      a.addEventListener('pointerdown', e => {
+        held = false; x0 = e.clientX; y0 = e.clientY;
+        t = setTimeout(() => {
+          held = true;
+          if (!view.classList.contains('picking')) pm.onclick();
+          if (!box.disabled) box.checked = !box.checked;
+          sync();
+          if (navigator.vibrate) navigator.vibrate(15);
+        }, 550);
+      });
+      a.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 10) clearTimeout(t); });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => a.addEventListener(ev, () => clearTimeout(t)));
+      a.addEventListener('click', e => {
+        if (held) { e.preventDefault(); held = false; return; }
+        // while picking, a tap ticks the drive instead of opening it
+        if (view.classList.contains('picking')) { e.preventDefault(); if (!box.disabled || box.checked) { box.checked = !box.checked; sync(); } }
+      });
+      a.addEventListener('contextmenu', e => e.preventDefault());
+    });
     $('#pickCancel').onclick = () => { view.classList.remove('picking'); bar.hidden = true; pm.hidden = false; };
     view.querySelectorAll('.pick-box').forEach(b => b.onchange = sync);
+    $('#pickDel').onclick = async () => {
+      const ids = picks();
+      if (!ids.length || !confirm(`Delete ${ids.length === 1 ? 'this drive' : ids.length + ' drives'} from this phone? Links you already shared keep working.`)) return;
+      for (const id of ids) await store.deleteDrive(id);
+      view.classList.remove('picking');
+      toast(ids.length === 1 ? 'Drive deleted.' : `${ids.length} drives deleted.`);
+      route();
+    };
     $('#pickPlay').onclick = async () => {
       const ids = picks();
       const chosen = done.filter(d => ids.includes(d.id));
