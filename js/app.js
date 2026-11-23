@@ -113,6 +113,7 @@ async function homeView() {
       <section class="card empty">
         <p>No drives yet. Mount your phone, tap <strong>Start a drive</strong>, and tap Stop once you're parked.</p>
         <button class="btn ghost" id="sample">Show me a sample drive</button>
+        <p class="muted small">Have a backup file? <a href="#/settings">Restore it in Settings</a>.</p>
       </section>`}
   `;
   view.querySelectorAll('[data-resume]').forEach(b => b.onclick = () => {
@@ -703,12 +704,51 @@ function settingsView() {
     </section>
     <h2 class="section-title">Your data</h2>
     <section class="card">
-      <p class="small">Drives are stored only on this phone. Sharing puts a copy of that one drive inside the link itself; there's no server and no account.</p>
+      <p class="small">Drives are stored only in this copy of the app. On iPhone, Safari and each home-screen icon keep their own separate drives. Back up to a file to keep them safe or move them to another copy or phone.</p>
+      <div class="row">
+        <button class="btn" id="backup">Back up all drives</button>
+        <button class="btn ghost" id="restoreBtn">Restore from backup</button>
+        <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+      </div>
+      <p class="muted small" id="backupInfo"></p>
       <button class="btn danger" id="wipe">Delete all my drives</button>
     </section>
     <p class="muted small">Maps and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM.</p>`;
   const persist = () => store.saveSettings({ name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value });
   ['#sname', '#strim', '#sauto'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
+  store.allDrives().then(all => {
+    const n = all.filter(d => d.status === 'done').length, r = all.filter(d => d.status === 'route').length;
+    $('#backupInfo').textContent = `${n} drive${n === 1 ? '' : 's'} and ${r} saved route${r === 1 ? '' : 's'} in this copy of the app.`;
+  });
+  $('#backup').onclick = async () => {
+    const all = (await store.allDrives()).filter(d => (d.status === 'done' || d.status === 'route') && !d.sample);
+    if (!all.length) { toast('Nothing to back up yet.'); return; }
+    const stamp = new Date().toISOString().slice(0, 10);
+    await saveFile(JSON.stringify({ app: 'ghost-run', v: 1, at: Date.now(), drives: all }), `ghost-run-backup-${stamp}.json`, 'application/json');
+  };
+  $('#restoreBtn').onclick = () => $('#restoreFile').click();
+  $('#restoreFile').onchange = async e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (data.app !== 'ghost-run' || !Array.isArray(data.drives)) throw new Error('not a Ghost Run backup');
+      const have = await store.allDrives();
+      const key = d => d.status + ':' + d.startedAt + ':' + (d.points?.length || 0);
+      const seen = new Set(have.map(key));
+      let added = 0;
+      for (const d of data.drives) {
+        if (!d || !Array.isArray(d.points) || !['done', 'route'].includes(d.status) || seen.has(key(d))) continue;
+        if (have.some(h => h.id === d.id)) d.id = d.id + '-' + Date.now().toString(36);
+        await store.putDrive(d); seen.add(key(d)); added++;
+      }
+      toast(added ? `Restored ${added} item${added === 1 ? '' : 's'}.` : 'Everything in that backup is already here.');
+      if (added) setTimeout(() => { location.hash = '#/'; }, 800);
+    } catch (err) {
+      toast('That file isn’t a Ghost Run backup.');
+    }
+    e.target.value = '';
+  };
   $('#wipe').onclick = async () => {
     if (!confirm('Delete every drive on this phone? This can’t be undone.')) return;
     await store.wipe(); toast('All drives deleted.'); location.hash = '#/';
