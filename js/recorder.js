@@ -69,6 +69,15 @@ export class Recorder extends EventTarget {
     return this.id;
   }
 
+  // A new route while driving (after leaving the planned one): keep recording, follow the new line.
+  async setGuide(guide) {
+    this.guide = guide;
+    this.tracker = new GuideTracker(guide, { anywhere: true });
+    this.guideState = null;
+    try { const d = await store.getDrive(this.id); if (d) await store.putDrive({ ...d, guide }); } catch {}
+    this.emit();
+  }
+
   async lockScreen() {
     try {
       if ('wakeLock' in navigator) {

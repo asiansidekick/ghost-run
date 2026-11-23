@@ -1,4 +1,4 @@
-// Turn-by-turn directions for a shared route, from the free public OSRM server (OpenStreetMap roads).
+// Turn-by-turn directions for a shared or planned route, from the free public OSRM server (OpenStreetMap roads).
 import { hav } from './analysis.js';
 
 const OSRM = 'https://router.project-osrm.org/match/v1/driving/';
@@ -22,7 +22,8 @@ function phrase(step) {
   const dir = modifier ? modifier.replace('sharp ', 'sharp ').replace('slight ', 'slight ') : '';
   switch (type) {
     case 'depart': return name ? `Start on ${name}` : 'Start';
-    case 'arrive': return 'Arrive at the end of the route';
+    case 'arrive': return step.label ? `Arrive at ${step.label}` : 'Arrive at the end of the route';
+    case 'waypoint': return `You've reached ${step.label || 'your stop'}`;
     case 'roundabout': case 'rotary': return `At the roundabout, take exit ${step.maneuver.exit || ''}${onto}`.replace('exit  ', 'the exit ');
     case 'merge': return `Merge${dir ? ' ' + dir : ''}${onto}`;
     case 'on ramp': return `Take the ramp${dir ? ' on the ' + dir : ''}${onto}`;
@@ -52,7 +53,12 @@ export async function directionsFor(points) {
     if (json.code !== 'Ok') throw new Error(json.message || json.code);
     for (const m of json.matchings) for (const leg of m.legs) for (const s of leg.steps) steps.push(s);
   }
-  // OSRM gives a depart/arrive per leg; keep only the first and last, and fold straight-on steps into the one before.
+  return tidySteps(steps);
+}
+
+// OSRM gives a depart/arrive per leg; keep only the first and last (a stop you pass stays, as type 'waypoint'),
+// and fold straight-on steps into the one before.
+export function tidySteps(steps) {
   const out = [];
   steps.forEach((s, k) => {
     const t = s.maneuver.type;

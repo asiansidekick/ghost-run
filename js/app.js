@@ -11,9 +11,10 @@ import { compareGroup, positionAt } from './compare.js';
 import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
+import { searchPlaces, routeThrough } from './plan.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '23 Nov 2026, 6:40 PM';
+export const APP_VERSION = '23 Nov 2026, 8:30 PM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -27,6 +28,7 @@ function fmtDur(ms) {
   if (ms < 60000) return Math.round(ms / 1000) + ' s';
   return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min` : `${m} min`;
 }
+const fmtMin = s => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min` : `${Math.max(1, Math.round(s / 60))} min`;
 const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const fmtDate = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -61,6 +63,8 @@ async function route() {
     }
     if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
     if (h === '#/settings') return settingsView();
+    if (h === '#/plan') return planView();
+    if (h.startsWith('#/plan/')) { const r = await store.getDrive(decodeURIComponent(h.slice(7))); return planView(r && r.plan ? r : null); }
     if (h.startsWith('#/route/')) { const r = await store.getDrive(decodeURIComponent(h.slice(8))); if (r) return renderRoute(r); location.hash = '#/'; return; }
     if (h.startsWith('#/race/')) return await raceFromStore(decodeURIComponent(h.slice(7)));
     return await homeView();
@@ -103,10 +107,11 @@ async function homeView() {
         </div>
       </section>`).join('')}
     <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start a drive'}</a>
+    ${recorder.active ? '' : `<a href="#/plan" class="btn ghost plan-btn">🧭 Plan a route or navigate somewhere</a>`}
     ${!standalone ? `<p class="hint">Tip: add Ghost Run to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
     ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
         <div class="drive-name">${esc(r.name)}</div>
-        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
+        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
     <div class="list-head"><h2 class="section-title">My drives</h2>${done.length > 1 ? `<button class="btn small ghost" id="pickMode">Play together</button>` : ''}</div>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
@@ -165,10 +170,11 @@ async function homeView() {
 
 // ---------- record ----------
 let pendingGuide = null;
+let lastReroute = 0;
 const voice = new Voice();
 const turnsCache = new WeakMap();
 function getTurns(guide) {
-  if (!turnsCache.has(guide)) turnsCache.set(guide, turnsFor(guide.points));
+  if (!turnsCache.has(guide)) turnsCache.set(guide, turnsFor(guide.points, guide.steps));
   return turnsCache.get(guide);
 }
 function followGuide(guide) {
@@ -183,7 +189,7 @@ function recordView() {
     const g = pendingGuide;
     view.innerHTML = `
       ${g ? `<section class="card banner follow-banner">
-        <div><strong>Following:</strong> ${esc(g.name)}${g.points[0].t != null ? '<br><span class="small">A ghost car will drive it alongside you, starting when you reach the start of the route.</span>' : ''}</div>
+        <div><strong>${g.plan ? 'Navigating' : 'Following'}:</strong> ${esc(g.name)}${g.points[0].t != null ? '<br><span class="small">A ghost car will drive it alongside you, starting when you reach the start of the route.</span>' : ''}${g.plan ? `<br><span class="small">${fmtKm(g.distance || 0)}, about ${fmtMin(g.duration || 0)}. Turn-by-turn from wherever you are; if you leave the route it finds a new one.</span>` : ''}</div>
         <button class="btn small ghost" id="nofollow">Don't follow</button>
       </section>` : ''}
       <section class="card">
@@ -196,7 +202,8 @@ function recordView() {
         </ol>
         <p class="muted small">Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map.</p>
       </section>
-      <button class="btn big start" id="go">Start</button>`;
+      <button class="btn big start" id="go">Start</button>
+      ${g ? '' : `<a href="#/plan" class="btn ghost plan-btn">🧭 Plan a route first</a>`}`;
     if ($('#nofollow')) $('#nofollow').onclick = () => { pendingGuide = null; recordView(); };
     $('#go').onclick = () => {
       if (pendingGuide) voice.unlock();
@@ -287,7 +294,7 @@ function recordView() {
         tb.innerHTML = `<span class="tb-arrow">⌖</span><span class="tb-text"><b>Head to the start</b>${st && st.distToStart != null ? `<small>${fmtKm(st.distToStart)} away, green dot on the map</small>` : ''}</span>`;
       } else if (st.off) {
         tb.className = 'turn-banner off';
-        tb.innerHTML = `<span class="tb-arrow">⚠</span><span class="tb-text"><b>Off the route</b><small>Get back to the yellow line</small></span>`;
+        tb.innerHTML = `<span class="tb-arrow">⚠</span><span class="tb-text"><b>Off the route</b><small>${g.plan ? 'Finding a new route from here…' : 'Get back to the yellow line'}</small></span>`;
       } else if (nt) {
         tb.className = 'turn-banner' + (nt.dist < 120 ? ' soon' : '');
         const then = turns[turns.indexOf(nt.turn) + 1];
@@ -300,12 +307,47 @@ function recordView() {
       let html;
       if (!st || !st.started) html = `<b>Head to the start</b><span>${st && st.distToStart != null ? fmtKm(st.distToStart) + ' away' : 'Waiting for GPS'}</span>`;
       else if (st.finished) html = `<b>🏁 Route done</b>${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
-      else html = `${st.off ? `<b class="bad">Off the route (${fmtKm(st.offBy)})</b>` : `<b>${fmtKm(st.remaining)} to go</b>`}${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
+      else html = `${st.off ? `<b class="bad">${g.plan ? 'Finding a new route…' : `Off the route (${fmtKm(st.offBy)})`}</b>` : `<b>${fmtKm(st.remaining)} to go${eta(st)}</b>`}${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
       $('#gh').innerHTML = html;
+      maybeReroute(st);
       const tint = st && st.started && !st.off && st.deltaS != null && Math.abs(st.deltaS) >= 1 ? (st.deltaS < 0 ? ' ahead' : ' behind') : '';
       $('#gh').className = 'guide-hud' + tint;
     }
   };
+  // planned routes: expected time left, scaled from the directions service's estimate
+  function eta(st) {
+    const tr = recorder.tracker;
+    if (!g.duration || !tr || !tr.total) return '';
+    const left = g.duration * st.remaining / tr.total;
+    const at = new Date(Date.now() + left * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    return ` · ${fmtMin(left)} <small>(arrive ${at})</small>`;
+  }
+  // planned routes: when you're away from the line (or not at its start yet), route again from where you are
+  let offSince = null, rerouting = false;
+  function maybeReroute(st) {
+    if (!g.plan || rerouting || !recorder.last || !st || navigator.onLine === false) return;
+    const need = st.started ? st.off : st.distToStart > 150;
+    if (!need) { offSince = null; return; }
+    const now = Date.now();
+    if (offSince == null) offSince = now;
+    if (now - offSince < (st.started ? 10000 : 0) || now - lastReroute < 20000) return;
+    rerouting = true; lastReroute = now;
+    const plan = g.plan, tr = recorder.tracker;
+    const passed = st.started ? tr.cum[st.idx] : -1;
+    const left = plan.stops.filter((x, k) => (plan.stopsAt ? plan.stopsAt[k] : Infinity) > passed + 30);
+    const stops = [...(!st.started && !plan.fromMe && plan.start ? [plan.start] : []), ...left];
+    if (!stops.length) return;
+    const here = { la: recorder.last.la, lo: recorder.last.lo, name: 'You' };
+    routeThrough([here, ...stops]).then(async r => {
+      if (!recorder.active || recorder.guide !== g) return;
+      const ng = { ...g, points: r.points, steps: r.steps, distance: r.distance, duration: r.duration, plan: { ...plan, fromMe: true, start: null, stops, stopsAt: r.stopsAt } };
+      await recorder.setGuide(ng);
+      if (st.started) { voice.say('New route'); toast('You left the route, so here is a new one from where you are.'); }
+      if (location.hash !== '#/record') return;
+      if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
+      recordView();
+    }).catch(e => { console.warn('Reroute failed', e); rerouting = false; });
+  }
   function progress() {
     const tr = recorder.tracker, st = recorder.guideState;
     return tr && st && st.started ? tr.cum[st.idx] : null;
@@ -837,6 +879,7 @@ function renderRoute(r) {
     <section class="actions">
       <a class="btn" href="${esc(googleMapsUrl(pts))}" target="_blank" rel="noopener">Open in Google Maps</a>
       <button class="btn start-alt" id="followRoute">Follow this route</button>
+      ${r.id && r.plan ? `<a class="btn ghost" href="#/plan/${encodeURIComponent(r.id)}">Edit route</a>` : ''}
       ${r.id ? `<button class="btn danger" id="delRoute">Remove from my routes</button>` : `<button class="btn ghost" id="saveRoute">Save to my routes</button>`}
     </section>
     <p class="muted small">Google Maps only takes a few stops along the way, so its route may differ a little from this one.</p>
@@ -859,7 +902,7 @@ function renderRoute(r) {
   map.fitBounds(line.getBounds(), { padding: [24, 24] });
   let stepMarker = null;
   let total = 0;
-  directionsFor(pts).then(steps => {
+  (r.steps ? Promise.resolve(r.steps) : directionsFor(pts)).then(steps => {
     $('#dir').innerHTML = steps.map((s, k) => {
       const at = total; total += s.distance;
       return `<li data-k="${k}"><span class="dir-text">${esc(s.text)}</span><span class="dir-dist">${s.type === 'arrive' ? fmtKm(at) + ' total' : 'then ' + fmtKm(s.distance)}</span></li>`;
@@ -878,6 +921,166 @@ function renderRoute(r) {
     $('#dir').innerHTML = `<li class="muted">Couldn't get directions right now (${esc(e.message)}). The map above and Google Maps still work.</li>`;
   });
   cleanup = () => dropMap(map);
+}
+
+// ---------- plan a route ----------
+// Search for places or tap the map to add stops; the last stop is where you're going.
+function planView(saved = null) {
+  const P = saved ? saved.plan : {};
+  const st = {
+    fromMe: saved ? !!P.fromMe : true, start: P.start || null,
+    stops: (P.stops || []).map(x => ({ ...x })), me: null, result: null,
+  };
+  view.innerHTML = `
+    <h1>${saved ? 'Edit route' : 'Plan a route'}</h1>
+    <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
+    <ul class="results" id="sr" hidden></ul>
+    <div class="map plan-map" id="pmap"></div>
+    <p class="muted small" id="phint">Tap the map to add a stop. Drag a pin to move it. The last stop is where you're going.</p>
+    <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
+    <ol class="stops" id="stops"></ol>
+    <div class="plan-sum" id="psum"></div>
+    <section class="actions">
+      <button class="btn start-alt" id="pgo" disabled>▶ Navigate and record</button>
+      <input type="text" id="pname" class="name-input" placeholder="Route name (optional)" value="${esc(saved ? saved.name : '')}">
+      <button class="btn ghost" id="psave" disabled>${saved ? 'Save changes' : 'Save to my routes'}</button>
+      <button class="btn ghost" id="pshare" disabled>Share route</button>
+    </section>`;
+  const map = newMap($('#pmap'));
+  const pinIcon = (txt, cls = '') => L.divIcon({ className: 'dot-wrap', html: `<div class="stop-pin ${cls}">${txt}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] });
+  let markers = [], meMarker = null, line = null, timer = null, reqNo = 0;
+  const origin = () => st.fromMe ? (st.me ? { ...st.me, name: 'Your location' } : null) : st.start;
+  const routeName = () => $('#pname').value.trim() || (st.stops.length ? `To ${st.stops[st.stops.length - 1].name}` : 'Planned route');
+
+  function draw() {
+    markers.forEach(m => m.remove()); markers = [];
+    if (!st.fromMe && st.start) {
+      const m = L.marker([st.start.la, st.start.lo], { icon: pinIcon('S', 'start'), draggable: true }).addTo(map);
+      m.on('dragend', () => { const ll = m.getLatLng(); st.start = { la: ll.lat, lo: ll.lng, name: 'Pinned start' }; changed(); });
+      markers.push(m);
+    }
+    st.stops.forEach((x, k) => {
+      const last = k === st.stops.length - 1;
+      const m = L.marker([x.la, x.lo], { icon: pinIcon(last ? '🏁' : k + 1, last ? 'dest' : ''), draggable: true }).addTo(map);
+      m.on('dragend', () => { const ll = m.getLatLng(); st.stops[k] = { la: ll.lat, lo: ll.lng, name: x.name.startsWith('Pin') ? x.name : 'Pin near ' + x.name }; changed(); });
+      markers.push(m);
+    });
+    const o = origin();
+    $('#stops').innerHTML = `
+      <li class="stop-item origin"><span class="stop-tag ${o ? 'start' : ''}">S</span><span class="stop-name">${st.fromMe ? (st.me ? 'Your location' : 'Finding your location…') : st.start ? esc(st.start.name) : '<span class="muted">Tap the map to set the start</span>'}</span></li>
+      ${st.stops.map((x, k) => `
+      <li class="stop-item"><span class="stop-tag ${k === st.stops.length - 1 ? 'dest' : ''}">${k === st.stops.length - 1 ? '🏁' : k + 1}</span><span class="stop-name">${esc(x.name)}</span>
+        ${k ? `<button class="btn small ghost" data-up="${k}" aria-label="Move earlier">↑</button>` : ''}<button class="btn small ghost" data-del="${k}" aria-label="Remove stop">✕</button></li>`).join('')}`;
+    $('#stops').querySelectorAll('[data-del]').forEach(b => b.onclick = () => { st.stops.splice(+b.dataset.del, 1); changed(); });
+    $('#stops').querySelectorAll('[data-up]').forEach(b => b.onclick = () => { const k = +b.dataset.up; [st.stops[k - 1], st.stops[k]] = [st.stops[k], st.stops[k - 1]]; changed(); });
+  }
+
+  function setResult(r) {
+    st.result = r;
+    if (line) { line.remove(); line = null; }
+    ['#pgo', '#psave', '#pshare'].forEach(id => { $(id).disabled = !r; });
+    if (!r) return;
+    const ll = r.points.map(p => [p.la, p.lo]);
+    line = L.layerGroup([L.polyline(ll, { color: '#000', weight: 10, opacity: 0.8 }), L.polyline(ll, { color: '#facc15', weight: 6 })]).addTo(map);
+    $('#psum').innerHTML = `<b>${fmtKm(r.distance)}</b> · about <b>${fmtMin(r.duration)}</b>${st.stops.length > 1 ? ` · ${st.stops.length - 1} stop${st.stops.length > 2 ? 's' : ''} on the way` : ''}`;
+  }
+
+  function changed(fit = false) {
+    draw();
+    clearTimeout(timer);
+    const o = origin();
+    if (!o || !st.stops.length) {
+      setResult(null);
+      $('#psum').innerHTML = !st.stops.length ? '<span class="muted">Add where you want to go.</span>' : '';
+      return;
+    }
+    $('#psum').innerHTML = '<span class="muted">Working out the route…</span>';
+    timer = setTimeout(async () => {
+      const n = ++reqNo;
+      try {
+        const r = await routeThrough([o, ...st.stops]);
+        if (n !== reqNo) return;
+        setResult(r);
+        if (fit) map.fitBounds(L.latLngBounds(r.points.map(p => [p.la, p.lo])), { padding: [30, 30] });
+      } catch (e) {
+        if (n !== reqNo) return;
+        setResult(null);
+        $('#psum').innerHTML = `<span class="bad">Couldn't get a route right now (${esc(e.message)}). Check your connection and try again.</span>`;
+      }
+    }, 350);
+  }
+
+  map.on('click', e => {
+    const p = { la: e.latlng.lat, lo: e.latlng.lng };
+    if (!st.fromMe && !st.start) st.start = { ...p, name: 'Pinned start' };
+    else st.stops.push({ ...p, name: `Pin ${st.stops.length + 1}` });
+    changed();
+  });
+  $('#fromMe').onchange = e => { st.fromMe = e.target.checked; if (!st.fromMe && !st.start && st.me) st.start = { ...st.me, name: 'Pinned start' }; changed(); };
+
+  $('#sf').onsubmit = async e => {
+    e.preventDefault();
+    const q = $('#sq').value.trim();
+    if (!q) return;
+    const box = $('#sr');
+    box.hidden = false; box.innerHTML = '<li class="muted">Searching…</li>';
+    try {
+      const c = map.getCenter();
+      const list = await searchPlaces(q, st.me ? [st.me.la, st.me.lo] : [c.lat, c.lng]);
+      box.innerHTML = list.length ? list.map((r, k) => `<li><button class="result" data-k="${k}"><b>${esc(r.name)}</b><small>${esc(r.detail)}</small></button></li>`).join('') : '<li class="muted">Nothing found. Try another name, or tap the map.</li>';
+      box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
+        const r = list[+b.dataset.k];
+        st.stops.push({ la: r.la, lo: r.lo, name: r.name });
+        box.hidden = true; $('#sq').value = '';
+        map.setView([r.la, r.lo], Math.max(map.getZoom(), 14));
+        changed(true);
+      });
+    } catch (err) {
+      box.innerHTML = `<li class="muted">Search isn't working right now (${esc(err.message)}). You can still tap the map.</li>`;
+    }
+  };
+
+  const guide = () => ({
+    name: routeName(), from: '', points: st.result.points, steps: st.result.steps,
+    distance: st.result.distance, duration: st.result.duration,
+    plan: { fromMe: st.fromMe, start: st.fromMe ? null : st.start, stops: st.stops, stopsAt: st.result.stopsAt },
+  });
+  $('#pgo').onclick = () => { lastReroute = 0; followGuide(guide()); };
+  $('#psave').onclick = async () => {
+    const g = guide();
+    const id = saved ? saved.id : 'r' + Date.now().toString(36);
+    await store.putDrive({ id, status: 'route', name: g.name, from: '', startedAt: saved ? saved.startedAt : Date.now(), points: g.points, steps: g.steps, plan: g.plan, distance: g.distance, duration: g.duration });
+    toast(saved ? 'Route saved.' : 'Saved. It’s on your home screen under My routes.');
+    location.hash = '#/route/' + encodeURIComponent(id);
+  };
+  $('#pshare').onclick = async () => {
+    const g = guide();
+    const payload = await packRoute(g.points, { name: g.name, from: store.settings().name, trim: false });
+    const r = await shareLink(shareUrl('r', payload), 'Route: ' + g.name, `A route to drive: ${g.name} (${fmtKm(g.distance)})`);
+    if (r === 'copied') toast('Route link copied. Your friend gets a map and directions.');
+  };
+
+  // where you are now, as the start
+  if (navigator.geolocation) navigator.geolocation.getCurrentPosition(pos => {
+    st.me = { la: pos.coords.latitude, lo: pos.coords.longitude };
+    meMarker = L.circleMarker([st.me.la, st.me.lo], { radius: 8, color: '#fff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1, interactive: false }).addTo(map);
+    if (!st.stops.length) map.setView([st.me.la, st.me.lo], 14);
+    changed(!saved);
+  }, () => {
+    if (st.fromMe) {
+      st.fromMe = false; $('#fromMe').checked = false;
+      if (saved && !st.start) st.start = { la: saved.points[0].la, lo: saved.points[0].lo, name: 'Route start' };
+      $('#phint').textContent = "Couldn't get your location, so tap the map to set a start first, then your stops.";
+    }
+    changed();
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+  if (saved) {
+    const all = [...(st.start ? [st.start] : []), ...st.stops].map(x => [x.la, x.lo]);
+    if (saved.points && saved.points.length) map.fitBounds(L.latLngBounds(saved.points.map(p => [p.la, p.lo])), { padding: [30, 30] });
+    else if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+  }
+  changed(!saved);
+  cleanup = () => { clearTimeout(timer); dropMap(map); };
 }
 
 // ---------- settings ----------

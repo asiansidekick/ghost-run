@@ -45,18 +45,24 @@ export function geometricTurns(points) {
   return turns;
 }
 
-export async function turnsFor(points) {
+// Directions steps (from the directions service) placed along the route's points.
+export function turnsFromSteps(points, steps) {
+  const cum = cumulative(points);
+  let from = 0;
+  const turns = [];
+  for (const s of steps) {
+    if (s.type === 'depart' || !s.loc) continue;
+    const i = nearestIdx(points, s.loc[1], s.loc[0], from);
+    from = i;
+    turns.push({ at: cum[i], la: s.loc[1], lo: s.loc[0], type: s.type, modifier: s.modifier || '', name: s.name || '', text: s.text });
+  }
+  return turns;
+}
+
+export async function turnsFor(points, steps = null) {
+  if (steps && steps.length) return { source: 'osrm', turns: turnsFromSteps(points, steps) };
   try {
-    const steps = await directionsFor(points);
-    const cum = cumulative(points);
-    let from = 0;
-    const turns = [];
-    for (const s of steps) {
-      if (s.type === 'depart' || !s.loc) continue;
-      const i = nearestIdx(points, s.loc[1], s.loc[0], from);
-      from = i;
-      turns.push({ at: cum[i], la: s.loc[1], lo: s.loc[0], type: s.type, modifier: s.modifier || '', name: s.name || '', text: s.text });
-    }
+    const turns = turnsFromSteps(points, await directionsFor(points));
     if (turns.length) return { source: 'osrm', turns };
   } catch (e) { console.warn('Directions service unavailable, using route shape', e); }
   return { source: 'shape', turns: geometricTurns(points) };
@@ -64,6 +70,7 @@ export async function turnsFor(points) {
 
 export function arrowFor(t) {
   if (t.type === 'arrive') return '🏁';
+  if (t.type === 'waypoint') return '📍';
   if (t.type === 'roundabout' || t.type === 'rotary') return '⟳';
   const m = t.modifier || '';
   if (m === 'uturn') return '⤺';

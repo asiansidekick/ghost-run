@@ -9,7 +9,10 @@ export function guideFromDrive(drive, name) {
   return { name, from: drive.from || '', points: drive.points.map(p => ({ la: p.la, lo: p.lo, t: p.t })) };
 }
 export function guideFromRoute(route) {
-  return { name: route.name || 'Route', from: route.from || '', points: route.points.map(p => ({ la: p.la, lo: p.lo })) };
+  const g = { name: route.name || 'Route', from: route.from || '', points: route.points.map(p => ({ la: p.la, lo: p.lo })) };
+  // a route planned in the app also carries its turns, stops and expected time
+  if (route.plan) Object.assign(g, { plan: route.plan, steps: route.steps, distance: route.distance, duration: route.duration });
+  return g;
 }
 
 export class GuideTracker {
