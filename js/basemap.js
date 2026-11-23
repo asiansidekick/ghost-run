@@ -3,6 +3,7 @@
 // vector maps can't load (no WebGL, offline, or the service is down).
 import * as store from './store.js';
 import { loadMapLibre, webglOk } from './livemap.js';
+import { addTerrain } from './terrain.js';
 
 const STYLE_URL = { light: 'https://tiles.openfreemap.org/styles/liberty', dark: 'https://tiles.openfreemap.org/styles/dark' };
 const OSM_TILES = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
@@ -113,7 +114,9 @@ export function addBasemap(map) {
   Promise.all([loadLeafletGL(), loadStyle(theme)]).then(([, style]) => {
     if (dead || !map._mapPane) return; // the map was closed meanwhile
     if (!style) { raster(); return; }
-    L.maplibreGL({ style: styleNow(theme) }).addTo(map);
+    const gl = L.maplibreGL({ style: styleNow(theme) }).addTo(map);
     map.getContainer().dataset.attr = 'vector';
+    // hill shading and contour lines on the flat maps too
+    try { const m = gl.getMaplibreMap(); m.once('style.load', () => addTerrain(m, { theme, before: labelLayerId(m) })); } catch (e) { console.warn(e); }
   }).catch(() => raster());
 }

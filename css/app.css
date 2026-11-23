@@ -346,3 +346,10 @@ h2 { font-size: 1.1rem; }
 .act-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; }
 .act-row select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: inherit; }
 .act-ico { margin-right: 2px; }
+
+/* elevation */
+.elev-chart { height: 130px; }
+.elev-chart.small { height: 90px; margin-top: 6px; }
+.grade-btn { position: absolute; top: 8px; left: 8px; z-index: 700; font-weight: 700; background: rgba(15, 17, 21, 0.7); }
+.grade-btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+@media (pointer: fine) { .grade-btn { left: 52px; } }

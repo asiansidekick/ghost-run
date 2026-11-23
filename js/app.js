@@ -15,10 +15,11 @@ import { searchPlaces, suggestPlaces, fuzzyScore, nearFirst, routeThrough } from
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D, pinchZoom } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
+import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 3:30 AM (v30)';
+export const APP_VERSION = '24 Nov 2026, 4:00 AM (v31)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -574,7 +575,7 @@ function renderDrive(drive, { own, save }) {
     </div>
     ${own ? `<label class="act-row"><span class="muted small">Activity</span><select id="actSel" aria-label="Activity">${Object.entries(ACTIVITIES).map(([k, a]) => `<option value="${k}"${k === actKey(drive) ? ' selected' : ''}>${a.icon} ${a.label}</option>`).join('')}</select></label>` : ''}
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar"${motor ? '' : ' hidden'}>${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
+    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><button class="btn small ghost grade-btn" id="gradeBtn" hidden aria-pressed="false">⛰ Steepness</button><div class="gbar-overlay" id="gbar"${motor ? '' : ' hidden'}>${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
@@ -614,6 +615,10 @@ function renderDrive(drive, { own, save }) {
     <canvas class="chart" id="cg"></canvas>
     <p class="muted small chart-key">Above the line is speeding up, below is braking. Dotted lines mark hard acceleration (0.30 g) and hard braking (0.35 g).</p>
     </div>
+    <h2 class="section-title">Elevation</h2>
+    <p class="small elev-sum" id="elevSum"><span class="muted">Working out heights from terrain data…</span></p>
+    <canvas class="chart elev-chart" id="ce"></canvas>
+    <p class="muted small chart-key">Shaded by steepness: <i class="sw" style="background:#22c55e"></i> under 2% <i class="sw" style="background:#facc15"></i> 2–5% <i class="sw" style="background:#f97316"></i> 5–8% <i class="sw" style="background:#ef4444"></i> steeper. Heights come from terrain data (about 30 m detail), not the phone's GPS. Tap ⛰ Steepness on the map to colour the route the same way.</p>
 
     <section class="actions">
       <button class="btn start-alt" id="follow">Follow this route with a ghost</button>
@@ -632,7 +637,8 @@ function renderDrive(drive, { own, save }) {
   const red = getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
   // everything drawn is also kept in lines/pins so the 3D view can draw the same
   const lines = [], pins = [];
-  const seg = (coords, o) => { lines.push({ coords, ...o, dash: !!o.dashArray }); L.polyline(coords, o).addTo(map); };
+  const speedLayer = L.layerGroup().addTo(map);
+  const seg = (coords, o) => { lines.push({ coords, ...o, dash: !!o.dashArray }); L.polyline(coords, o).addTo(speedLayer); };
   let run = [A.pts[0]], runOver = A.pts[0].over;
   const flush = () => { if (run.length > 1) seg(run.map(p => [p.la, p.lo]), { color: runOver ? red : blue, weight: runOver ? 6 : 5, opacity: 0.95 }); };
   for (let i = 1; i < A.pts.length; i++) {
@@ -660,7 +666,29 @@ function renderDrive(drive, { own, save }) {
   const trail = L.polyline([], { color: '#fff', weight: 3, opacity: 0.85 }).addTo(map);
   const marker = L.marker([first.la, first.lo], { icon: dotIcon(blue), zIndexOffset: 1000, interactive: false }).addTo(map);
   // the 3D view (when on) mirrors the dot and trail
-  let m3 = null, m3dot = null, m3trail = null;
+  let m3 = null, m3dot = null, m3trail = null, m3lines = null, m3grade = null;
+  // elevation: worked out once from terrain data, kept with your own recordings
+  let prof = drive.elev && drive.elev.v === 1 ? drive.elev.p : null, gradeOn = false, gradeLayer = null, elevCh = null;
+  function applyGrade() {
+    if (!prof) return;
+    const gl = gradeLines(prof).map(l => ({ ...l, weight: 5, opacity: 0.95 }));
+    if (gradeOn) {
+      if (!gradeLayer) gradeLayer = L.layerGroup(gl.map(l => L.polyline(l.coords, { color: l.color, weight: 5, opacity: 0.95 })));
+      map.removeLayer(speedLayer); gradeLayer.addTo(map);
+    } else { if (gradeLayer) map.removeLayer(gradeLayer); speedLayer.addTo(map); }
+    if (m3) {
+      if (gradeOn && !m3grade) m3grade = m3.addLines(gl);
+      if (m3lines) m3.showLines(m3lines, !gradeOn);
+      if (m3grade) m3.showLines(m3grade, gradeOn);
+    }
+  }
+  function drawElev() { if (prof && $('#ce')) elevCh = elevChart($('#ce'), prof, A.pts[idx] ? A.pts[idx].dist : null); }
+  function showElev() {
+    if (!$('#elevSum')) return;
+    $('#elevSum').innerHTML = `<b>↑ ${prof.climb} m</b> climb · <b>↓ ${prof.descent} m</b> descent · ${prof.min}–${prof.max} m high · steepest ${prof.steepest}%`;
+    $('#gradeBtn').hidden = false;
+    drawElev();
+  }
   const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
   const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = spd(v).n; });
   const prevOf = i => { const q = A.pts[Math.max(0, i - 8)]; return [q.la, q.lo]; };
@@ -686,7 +714,8 @@ function renderDrive(drive, { own, save }) {
     }
     catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); viewMode = '2d'; if ($('#v3d')) $('#v3d').textContent = VIEWS['2d']; return set3D(false); }
     if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
-    m3.addLines(lines);
+    m3lines = m3.addLines(lines);
+    m3grade = null; applyGrade();
     pins.forEach(p => m3.pin(p.ll, p.fill, p.title));
     m3trail = m3.liveLine('#fff', 3, 0.85);
     m3dot = m3.dot(`<div class="live-dot${playing ? ' moving' : ''}" style="--c:${blue}"><i></i><span class="spd">0</span></div>`, [A.pts[idx].la, A.pts[idx].lo]);
@@ -716,7 +745,7 @@ function renderDrive(drive, { own, save }) {
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
     readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${spd(p.v).n}</b> ${spd(p.v).u}</span>${act.limits ? `<span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span>` : ''}${motor ? `<span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>` : act.pace ? `<span>${Math.round(p.v)} km/h</span>` : ''}`;
-    speedChart(cs, A, idx); gChart(cg, A, idx);
+    speedChart(cs, A, idx); gChart(cg, A, idx); drawElev();
   };
   scrub.oninput = () => { stopPlay(); setIdx(+scrub.value, true); };
   const onChart = c => e => { stopPlay(); setIdx(xToIndex(c, A, e.clientX), true); };
@@ -759,7 +788,18 @@ function renderDrive(drive, { own, save }) {
   };
   view.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { stopPlay(); setIdx(+b.dataset.jump, true); $('#map').scrollIntoView({ behavior: 'smooth' }); });
   setIdx(0);
-  const onResize = () => { speedChart(cs, A, idx); gChart(cg, A, idx); };
+  const onResize = () => { speedChart(cs, A, idx); gChart(cg, A, idx); drawElev(); };
+  // elevation chart: tap or drag to jump there; the map button colours the route by steepness
+  const onElev = e => { if (!elevCh) return; stopPlay(); const m = elevCh.distAt(e.clientX); let j = 0; while (j < A.pts.length - 1 && A.pts[j + 1].dist <= m) j++; setIdx(j, true); };
+  $('#ce').addEventListener('pointerdown', onElev);
+  $('#ce').addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') onElev(e); });
+  $('#gradeBtn').onclick = () => { gradeOn = !gradeOn; $('#gradeBtn').classList.toggle('on', gradeOn); $('#gradeBtn').setAttribute('aria-pressed', gradeOn); applyGrade(); };
+  if (prof) showElev();
+  else profile(drive.points).then(async p => {
+    if (!p || !document.body.contains($('#ce'))) return;
+    prof = p; showElev();
+    if (own) { drive.elev = { v: 1, p }; await store.putDrive(drive); }
+  }).catch(e => { console.warn('Elevation unavailable', e); if ($('#elevSum')) $('#elevSum').innerHTML = '<span class="muted">Couldn’t get terrain data right now. It’ll try again next time you open this.</span>'; });
   window.addEventListener('resize', onResize);
 
   // actions
@@ -1181,6 +1221,7 @@ async function planView(saved = null) {
     <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
     <ol class="stops" id="stops"></ol>
     <div class="plan-sum" id="psum"></div>
+    <canvas class="chart elev-chart small" id="pelev" hidden></canvas>
     <section class="actions">
       <button class="btn start-alt" id="pgo" disabled>▶ Navigate and record</button>
       <input type="text" id="pname" class="name-input" placeholder="Route name (optional)" value="${esc(saved ? saved.name : '')}">
@@ -1234,7 +1275,13 @@ async function planView(saved = null) {
     st.result = r;
     ['#pgo', '#psave', '#pshare'].forEach(id => { $(id).disabled = !r; });
     map.setRoute(r ? r.points.map(p => [p.la, p.lo]) : null);
+    $('#pelev').hidden = true;
     if (!r) return;
+    profile(r.points).then(p => {
+      if (st.result !== r || !p) return;
+      $('#psum').insertAdjacentHTML('beforeend', `<div class="small">⛰ <b>↑ ${p.climb} m</b> · <b>↓ ${p.descent} m</b> · steepest ${p.steepest}%</div>`);
+      $('#pelev').hidden = false; elevChart($('#pelev'), p);
+    }).catch(e => console.warn('Elevation unavailable', e));
     $('#psum').innerHTML = `${ROUTE_MODES[st.mode].icon} <b>${fmtKm(r.distance)}</b> · about <b>${fmtMin(r.duration)}</b>${st.stops.length > 1 ? ` · ${st.stops.length - 1} stop${st.stops.length > 2 ? 's' : ''} on the way` : ''}`;
   }
 
@@ -1389,6 +1436,9 @@ function settingsView() {
       <label>Map style
         <select id="sstyle">${[['auto', 'Day and night (dark after 6 PM)'], ['light', 'Always light'], ['dark', 'Always dark']].map(([v, t]) => `<option value="${v}" ${v === (s.mapStyle || 'auto') ? 'selected' : ''}>${t}</option>`).join('')}</select>
       </label>
+      <label>Hills and terrain
+        <select id="sterrain">${[['auto', '3D hills in the planner, shading and contours elsewhere'], ['on', '3D hills everywhere (replays may stutter)'], ['flat', 'Shading and contours only'], ['off', 'Off']].map(([v, t]) => `<option value="${v}" ${v === (s.terrain || 'auto') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      </label>
     </section>
     <h2 class="section-title">Speed limits</h2>
     <section class="card">
@@ -1410,8 +1460,8 @@ function settingsView() {
     </section>
     <p class="muted small">Version: ${APP_VERSION}. If this looks older than expected, close the app fully and open it again.</p>
     <p class="muted small">Maps by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> and OpenMapTiles. Map and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM, place search by Nominatim.</p>`;
-  const persist = () => store.saveSettings({ ...store.settings(), name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value, mapStyle: $('#sstyle').value });
-  ['#sname', '#strim', '#sauto', '#sstyle'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
+  const persist = () => store.saveSettings({ ...store.settings(), name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value, mapStyle: $('#sstyle').value, terrain: $('#sterrain').value });
+  ['#sname', '#strim', '#sauto', '#sstyle', '#sterrain'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
   store.allDrives().then(all => {
     const n = all.filter(d => d.status === 'done').length, r = all.filter(d => d.status === 'route').length;
     $('#backupInfo').textContent = `${n} drive${n === 1 ? '' : 's'} and ${r} saved route${r === 1 ? '' : 's'} in this copy of the app.`;

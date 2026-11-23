@@ -2,6 +2,7 @@
 // or a flat north-up view. Built on MapLibre with OpenFreeMap vector maps (3D buildings, day and night);
 // loaded only when needed.
 import { styleNow, isVector, mapTheme, add3dBuildings, labelLayerId } from './basemap.js';
+import { addTerrain } from './terrain.js';
 let loading = null;
 export function loadMapLibre() {
   if (window.maplibregl) return Promise.resolve(window.maplibregl);
@@ -43,6 +44,7 @@ export class LiveMap {
       const m = this.map;
       if (this.vector) add3dBuildings(m, this.theme, 0.55);
       const before = this.vector ? labelLayerId(m) : undefined;
+      addTerrain(m, { three: true, moving: true, theme: this.theme, before });
       m.addSource('guide', { type: 'geojson', data: line([]) });
       m.addSource('trail', { type: 'geojson', data: line([]) });
       // line widths grow with zoom, like a sat-nav

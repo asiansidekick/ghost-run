@@ -3,6 +3,7 @@
 import { loadMapLibre } from './livemap.js';
 import { loadStyle, styleNow, isVector, mapTheme, add3dBuildings, labelLayerId, RASTER_STYLE } from './basemap.js';
 import { bearing } from './analysis.js';
+import { addTerrain } from './terrain.js';
 
 // Pinch (or mouse wheel) that only changes how close the camera sits; the camera keeps following.
 export function pinchZoom(el, onDelta) {
@@ -54,6 +55,7 @@ export class Map3D {
     this.ready = new Promise(res => this.map.once('style.load', () => {
       if (this.vector) add3dBuildings(this.map, theme, 0.9);
       this.before = this.vector ? labelLayerId(this.map) : undefined;
+      addTerrain(this.map, { three: true, moving: autoCam, theme, before: this.before });
       res();
     }));
   }
@@ -176,6 +178,11 @@ export class Map3D {
   inView([la, lo], inset = 0.15) {
     const c = this.map.getContainer(), p = this.map.project([lo, la]);
     return p.x > c.clientWidth * inset && p.x < c.clientWidth * (1 - inset) && p.y > c.clientHeight * inset && p.y < c.clientHeight * (1 - inset);
+  }
+
+  // show or hide a set of lines added with addLines
+  showLines(id, on) {
+    for (const l of [id, id + 'd']) if (this.map.getLayer(l)) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none');
   }
 
   remove() { try { this.map.remove(); } catch {} }
