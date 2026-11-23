@@ -298,3 +298,4 @@ h2 { font-size: 1.1rem; }
 .gb-fill.hard { opacity: 1; filter: brightness(1.25); }
 .gbar.mini { grid-column: 1 / -1; }
 .gbar.mini .gb-track { height: 5px; }
+.race-fit { position: absolute; right: 8px; top: 52px; z-index: 600; }

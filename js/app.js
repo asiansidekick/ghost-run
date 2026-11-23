@@ -12,9 +12,10 @@ import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
+import { addBasemap, loadStyle } from './basemap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 12:00 AM';
+export const APP_VERSION = '24 Nov 2026, 1:15 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -42,10 +43,7 @@ function toast(msg, ms = 2600) {
 
 function newMap(el, opts = {}) {
   const map = L.map(el, { zoomControl: false, attributionControl: true, ...opts }).setView(BANGKOK, 12);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  }).addTo(map);
+  addBasemap(map);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   return map;
 }
@@ -58,7 +56,7 @@ async function route() {
   try {
     if (h.startsWith('#s=') || h.startsWith('#r=')) return await sharedView(h.slice(3));
     if (h === '#/record') {
-      if (recorder.active && webglOk()) { try { await loadMapLibre(); } catch {} }
+      if (recorder.active && webglOk()) { try { await Promise.all([loadMapLibre(), loadStyle()]); } catch {} }
       return recordView();
     }
     if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
@@ -241,7 +239,7 @@ function recordView() {
     $('#go').onclick = () => {
       if (pendingGuide) voice.unlock();
       recorder.start(null, pendingGuide); pendingGuide = null;
-      if (webglOk()) loadMapLibre().catch(() => {}).then(() => { if (location.hash === '#/record') recordView(); });
+      if (webglOk()) Promise.all([loadMapLibre(), loadStyle()]).catch(() => {}).then(() => { if (location.hash === '#/record') recordView(); });
       else recordView();
     };
     return;
@@ -827,6 +825,7 @@ function renderRace(group, fromHash) {
       <div class="map race-map" id="map"></div>
       <div class="race-hud" id="hud"></div>
       <div class="race-clock" id="clock">0:00</div>
+      <button class="btn small ghost race-fit" id="fitAll" hidden>Show everyone</button>
     </div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play">▶</button>
@@ -863,6 +862,24 @@ function renderRace(group, fromHash) {
   const firstNames = entries.map(e => e.label.split(',')[0]);
   const dupNames = new Set(firstNames).size < firstNames.length;
   let t = 0, playing = false, raf = null, rate = 20;
+  // keep everyone in view while it plays; a finger on the map turns that off until "Show everyone"
+  let autoFit = true, lastFit = 0;
+  map.on('dragstart', () => { autoFit = false; $('#fitAll').hidden = false; });
+  $('#fitAll').onclick = () => { autoFit = true; lastFit = 0; $('#fitAll').hidden = true; fitAll(true); };
+  function fitAll(force) {
+    const live = dots.map(({ e }) => positionAt(e, t)).filter(p => !p.done);
+    const pts = (live.length ? live : dots.map(({ e }) => positionAt(e, t))).map(p => [p.la, p.lo]);
+    if (!pts.length) return;
+    const now = performance.now();
+    const inner = map.getBounds().pad(-0.2);
+    const outside = pts.some(p => !inner.contains(p));
+    // re-frame when someone nears the edge, or every few seconds so it zooms back in as they bunch up
+    if (!force && !outside && now - lastFit < 3000) return;
+    if (!force && now - lastFit < 700) return;
+    lastFit = now;
+    const hudH = $('#hud').offsetHeight || 0;
+    map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [30, hudH + 30], paddingBottomRight: [50, 40], maxZoom: 17, animate: true, duration: 0.8 });
+  }
   const draw = () => {
     $('#clock').textContent = fmtClock(t);
     $('#scrub').value = t;
@@ -900,6 +917,7 @@ function renderRace(group, fromHash) {
       if (!playing) return;
       t = Math.min(maxMs, t + (now - last) * rate); last = now;
       draw();
+      if (autoFit) fitAll(false);
       if (t >= maxMs) { stop(); return; }
       raf = requestAnimationFrame(frameFn);
     };
@@ -1149,6 +1167,9 @@ function settingsView() {
       <label>Stop recording after parked for
         <select id="sauto">${[3, 5, 10, 15].map(m => `<option value="${m}" ${m === s.autoStopMin ? 'selected' : ''}>${m} minutes</option>`).join('')}</select>
       </label>
+      <label>Map style
+        <select id="sstyle">${[['auto', 'Day and night (dark after 6 PM)'], ['light', 'Always light'], ['dark', 'Always dark']].map(([v, t]) => `<option value="${v}" ${v === (s.mapStyle || 'auto') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      </label>
     </section>
     <h2 class="section-title">Speed limits</h2>
     <section class="card">
@@ -1169,9 +1190,9 @@ function settingsView() {
       <button class="btn danger" id="wipe">Delete all my drives</button>
     </section>
     <p class="muted small">Version: ${APP_VERSION}. If this looks older than expected, close the app fully and open it again.</p>
-    <p class="muted small">Maps and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM.</p>`;
-  const persist = () => store.saveSettings({ name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value });
-  ['#sname', '#strim', '#sauto'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
+    <p class="muted small">Maps by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> and OpenMapTiles. Map and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM, place search by Nominatim.</p>`;
+  const persist = () => store.saveSettings({ ...store.settings(), name: $('#sname').value.trim(), trimShare: $('#strim').checked, autoStopMin: +$('#sauto').value, mapStyle: $('#sstyle').value });
+  ['#sname', '#strim', '#sauto', '#sstyle'].forEach(sel => $(sel).addEventListener('change', () => { persist(); toast('Saved.'); }));
   store.allDrives().then(all => {
     const n = all.filter(d => d.status === 'done').length, r = all.filter(d => d.status === 'route').length;
     $('#backupInfo').textContent = `${n} drive${n === 1 ? '' : 's'} and ${r} saved route${r === 1 ? '' : 's'} in this copy of the app.`;
@@ -1223,6 +1244,7 @@ function settingsView() {
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+if (webglOk()) loadStyle(); // fetch the map style early so maps open straight away
 route();
 
 // Leaflet finishes a zoom animation on a timer; removing the map before it fires throws.

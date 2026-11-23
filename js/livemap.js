@@ -1,5 +1,7 @@
 // The live map while recording: a 3D, heading-up view that turns with you (like a sat-nav),
-// or a flat north-up view. Built on MapLibre with OpenStreetMap tiles; loaded only when needed.
+// or a flat north-up view. Built on MapLibre with OpenFreeMap vector maps (3D buildings, day and night);
+// loaded only when needed.
+import { styleNow, isVector, mapTheme, add3dBuildings, labelLayerId } from './basemap.js';
 let loading = null;
 export function loadMapLibre() {
   if (window.maplibregl) return Promise.resolve(window.maplibregl);
@@ -20,18 +22,6 @@ export function webglOk() {
   try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; }
 }
 
-const STYLE = {
-  version: 8,
-  sources: {
-    osm: {
-      type: 'raster', tileSize: 256, maxzoom: 19,
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    },
-  },
-  layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#1d2230' } }, { id: 'osm', type: 'raster', source: 'osm' }],
-};
-
 const line = coords => ({ type: 'Feature', geometry: { type: 'LineString', coordinates: coords }, properties: {} });
 
 export class LiveMap {
@@ -41,17 +31,25 @@ export class LiveMap {
     this.heading = 0;
     this.ready = false;
     this.onUserMove = onUserMove;
+    this.theme = mapTheme();
+    const style = styleNow(this.theme);
+    this.vector = isVector(style);
+    el.classList.add('theme-' + this.theme);
     this.map = new maplibregl.Map({
-      container: el, style: STYLE, center: center ? [center[1], center[0]] : [100.5018, 13.7563],
+      container: el, style, center: center ? [center[1], center[0]] : [100.5018, 13.7563],
       zoom: 16, pitch: 0, attributionControl: { compact: true }, dragRotate: true, pitchWithRotate: true,
     });
     this.loaded = new Promise(res => this.map.on('load', () => {
       const m = this.map;
+      if (this.vector) add3dBuildings(m, this.theme, 0.55);
+      const before = this.vector ? labelLayerId(m) : undefined;
       m.addSource('guide', { type: 'geojson', data: line([]) });
       m.addSource('trail', { type: 'geojson', data: line([]) });
-      m.addLayer({ id: 'guide-casing', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#000', 'line-width': 14, 'line-opacity': 0.85 } });
-      m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#facc15', 'line-width': 8 } });
-      m.addLayer({ id: 'trail', type: 'line', source: 'trail', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#3b82f6', 'line-width': 5, 'line-opacity': 0.9 } });
+      // line widths grow with zoom, like a sat-nav
+      const w = k => ['interpolate', ['exponential', 1.5], ['zoom'], 12, k * 0.45, 16, k, 19, k * 1.8];
+      m.addLayer({ id: 'guide-casing', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#000', 'line-width': w(14), 'line-opacity': 0.85 } }, before);
+      m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#facc15', 'line-width': w(8) } }, before);
+      m.addLayer({ id: 'trail', type: 'line', source: 'trail', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#3b82f6', 'line-width': w(5), 'line-opacity': 0.9 } }, before);
       this.ready = true;
       res();
     }));
