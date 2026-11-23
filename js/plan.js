@@ -36,6 +36,61 @@ export async function searchPlaces(q, near) {
   });
 }
 
+// Suggestions while you type, from Photon (komoot's free OpenStreetMap search, made for search-as-you-type
+// and forgiving of small spelling mistakes). Nominatim isn't used for this: it asks for searches on submit only.
+const PHOTON = 'https://photon.komoot.io/api/';
+export async function suggestPlaces(q, near, signal) {
+  const u = new URL(PHOTON);
+  u.searchParams.set('q', q);
+  u.searchParams.set('limit', '7');
+  u.searchParams.set('lang', 'en');
+  if (near) {
+    u.searchParams.set('lat', near[0].toFixed(4)); u.searchParams.set('lon', near[1].toFixed(4));
+    u.searchParams.set('zoom', '12'); u.searchParams.set('location_bias_scale', '0.1');
+    u.searchParams.set('limit', '15'); // more than we show, so nearby ones can be picked out
+  }
+  const res = await fetch(u, { signal });
+  if (!res.ok) throw new Error('Search service ' + res.status);
+  const json = await res.json();
+  const seen = new Set();
+  const list = (json.features || []).map(f => {
+    const p = f.properties || {}, [lo, la] = f.geometry.coordinates;
+    const name = p.name || [p.housenumber, p.street].filter(Boolean).join(' ') || p.city || 'Place';
+    const detail = [p.street !== name ? p.street : '', p.district, p.city !== name ? p.city : '', p.state !== p.city ? p.state : '', p.country]
+      .filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 3).join(', ');
+    return { name, detail, la, lo };
+  }).filter(r => { const k = r.name + '|' + r.la.toFixed(3) + r.lo.toFixed(3); if (seen.has(k)) return false; seen.add(k); return true; });
+  return near ? nearFirst(list, near).slice(0, 7) : list.slice(0, 7);
+}
+
+// Places near you (or near where the map is) first: the service's own order, nudged by distance,
+// so a well-known place 5 km away beats a same-named street on another continent.
+export function nearFirst(list, near) {
+  return list.map((r, i) => {
+    const km = hav(near[0], near[1], r.la, r.lo) / 1000;
+    return { ...r, km, sc: i + (km < 30 ? 0 : km < 150 ? 4 : km < 800 ? 8 : 14) + Math.log10(1 + km) };
+  }).sort((a, b) => a.sc - b.sc);
+}
+
+// How close a typed word is to a name, allowing a couple of slips ("yarowat" ~ "Yaowarat"). Lower is closer.
+export function fuzzyScore(q, name) {
+  q = q.toLowerCase().trim(); name = name.toLowerCase();
+  if (!q) return Infinity;
+  if (name.includes(q)) return 0;
+  let best = Infinity;
+  for (const w of name.split(/[\s,()-]+/).filter(Boolean)) {
+    const a = q, b = w.slice(0, Math.max(q.length + 2, 1));
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+    best = Math.min(best, ...d[a.length].slice(Math.max(1, a.length - 2)));
+  }
+  return best <= Math.max(1, Math.floor(q.length / 3)) ? best : Infinity;
+}
+
 // Extra points along long straight roads, so "am I on the route?" can check every 20 m.
 function densify(coords, every = 20) {
   const out = [];

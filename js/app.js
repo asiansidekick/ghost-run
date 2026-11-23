@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import { Recorder, finishDrive } from './recorder.js';
-import { analyse, bearing } from './analysis.js';
+import { analyse, bearing, hav } from './analysis.js';
 import { computeLimits, defaultLimits, TH_DEFAULTS } from './limits.js';
 import { speedChart, gChart, xToIndex } from './charts.js';
 import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './share.js';
@@ -11,14 +11,14 @@ import { compareGroup, positionAt } from './compare.js';
 import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
-import { searchPlaces, routeThrough } from './plan.js';
+import { searchPlaces, suggestPlaces, fuzzyScore, nearFirst, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D, pinchZoom } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 3:30 AM (v29)';
+export const APP_VERSION = '24 Nov 2026, 3:30 AM (v30)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -1173,7 +1173,7 @@ async function planView(saved = null) {
   const modeKmh = () => ACTIVITIES[activityForMode(st.mode, store.settings().activity)].kmh;
   view.innerHTML = `
     <h1>${saved ? 'Edit route' : 'Plan a route'}</h1>
-    <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
+    <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off" autocorrect="off" spellcheck="false"><button class="btn" type="submit">Search</button></form>
     <ul class="results" id="sr" hidden></ul>
     <div class="mode-row" id="pmode" role="group" aria-label="How the route finds its way">${Object.entries(ROUTE_MODES).map(([k, m]) => `<button class="mode-btn${k === st.mode ? ' on' : ''}" data-mode="${k}">${m.icon} ${m.label}</button>`).join('')}</div>
     <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div><button class="btn small ghost view3d-btn plan-tilt" id="ptilt" hidden>2D</button></div>
@@ -1276,25 +1276,59 @@ async function planView(saved = null) {
   });
   $('#fromMe').onchange = e => { st.fromMe = e.target.checked; if (!st.fromMe && !st.start && st.me) st.start = { ...st.me, name: 'Pinned start' }; changed(); };
 
+  // place search: suggestions as you type, recent places when the box is empty, full search on Search
+  const box = $('#sr'), sq = $('#sq');
+  const near = () => st.me ? [st.me.la, st.me.lo] : map.center();
+  const recents = () => (store.settings().recentPlaces || []);
+  let sugT = null, sugCtl = null, shown = [];
+  function showList(list, note = '') {
+    shown = list;
+    box.hidden = !list.length && !note;
+    box.innerHTML = list.map((r, k) => `<li><button type="button" class="result" data-k="${k}"><b>${r.recent ? '🕘 ' : ''}${esc(r.name)}</b>${r.detail || r.km != null ? `<small>${r.km != null ? `${r.km < 1 ? Math.round(r.km * 1000) + ' m' : r.km < 100 ? r.km.toFixed(1) + ' km' : Math.round(r.km) + ' km'} away${r.detail ? ' · ' : ''}` : ''}${esc(r.detail || '')}</small>` : ''}</button></li>`).join('') + (note ? `<li class="muted">${note}</li>` : '');
+    box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => pick(shown[+b.dataset.k]));
+  }
+  function pick(r) {
+    st.stops.push({ la: r.la, lo: r.lo, name: r.name });
+    const keep = recents().filter(x => !(x.name === r.name && Math.abs(x.la - r.la) < 1e-4));
+    store.saveSettings({ ...store.settings(), recentPlaces: [{ name: r.name, detail: r.detail || '', la: r.la, lo: r.lo }, ...keep].slice(0, 8) });
+    box.hidden = true; sq.value = ''; sq.blur();
+    map.setView([r.la, r.lo], Math.max(map.zoom(), 14));
+    changed(true);
+  }
+  const recentMatches = q => recents().map(r => ({ ...r, recent: true, sc: fuzzyScore(q, r.name) })).filter(r => r.sc < Infinity).sort((a, b) => a.sc - b.sc).slice(0, 3);
+  const withKm = list => list.map(r => r.km != null ? r : { ...r, km: hav(near()[0], near()[1], r.la, r.lo) / 1000 });
+  const merge = (a, b) => [...a, ...b.filter(r => !a.some(x => x.name === r.name && Math.abs(x.la - r.la) < 1e-3))];
+  sq.addEventListener('focus', () => { if (!sq.value.trim() && recents().length) showList(withKm(recents().map(r => ({ ...r, recent: true })))); });
+  sq.addEventListener('input', () => {
+    clearTimeout(sugT); if (sugCtl) sugCtl.abort();
+    const q = sq.value.trim();
+    if (!q) { showList(withKm(recents().map(r => ({ ...r, recent: true })))); return; }
+    const mine = recentMatches(q);
+    if (q.length < 3) { showList(withKm(mine)); return; }
+    showList(withKm(mine), 'Looking…');
+    sugT = setTimeout(async () => {
+      sugCtl = new AbortController();
+      try {
+        const list = await suggestPlaces(q, near(), sugCtl.signal);
+        if (sq.value.trim() !== q) return;
+        const all = withKm(merge(mine, list));
+        showList(all, all.length ? '' : 'No matches yet. Keep typing, or tap Search.');
+      } catch (err) { if (err.name !== 'AbortError' && sq.value.trim() === q) showList(mine, 'Suggestions aren’t available right now. Tap Search.'); }
+    }, 300);
+  });
   $('#sf').onsubmit = async e => {
     e.preventDefault();
-    const q = $('#sq').value.trim();
+    clearTimeout(sugT); if (sugCtl) sugCtl.abort();
+    const q = sq.value.trim();
     if (!q) return;
-    const box = $('#sr');
-    box.hidden = false; box.innerHTML = '<li class="muted">Searching…</li>';
-    try {
-      const list = await searchPlaces(q, st.me ? [st.me.la, st.me.lo] : map.center());
-      box.innerHTML = list.length ? list.map((r, k) => `<li><button class="result" data-k="${k}"><b>${esc(r.name)}</b><small>${esc(r.detail)}</small></button></li>`).join('') : '<li class="muted">Nothing found. Try another name, or tap the map.</li>';
-      box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
-        const r = list[+b.dataset.k];
-        st.stops.push({ la: r.la, lo: r.lo, name: r.name });
-        box.hidden = true; $('#sq').value = '';
-        map.setView([r.la, r.lo], Math.max(map.zoom(), 14));
-        changed(true);
-      });
-    } catch (err) {
-      box.innerHTML = `<li class="muted">Search isn't working right now (${esc(err.message)}). You can still tap the map.</li>`;
-    }
+    showList([], 'Searching…');
+    // both services: Photon copes with spelling slips, Nominatim knows some names Photon doesn't
+    const [a, b] = await Promise.allSettled([suggestPlaces(q, near()), searchPlaces(q, near())]);
+    if (sq.value.trim() !== q) return;
+    const list = merge(merge(recentMatches(q), a.status === 'fulfilled' ? a.value : []), b.status === 'fulfilled' ? nearFirst(b.value, near()) : []);
+    if (list.length) showList(withKm(list).slice(0, 8));
+    else if (a.status === 'rejected' && b.status === 'rejected') showList([], `Search isn't working right now (${esc(b.reason.message)}). You can still tap the map.`);
+    else showList([], 'Nothing found. Check the spelling or try a nearby place, or tap the map.');
   };
 
   const guide = () => ({
