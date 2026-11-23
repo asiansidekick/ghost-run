@@ -20,14 +20,15 @@ export class Map3D {
     this.theme = theme;
     this.heading = null;
     this.map = new maplibregl.Map({
-      container: el, style: this.vector ? style : RASTER_STYLE, center: [100.5018, 13.7563], zoom: 12, pitch: 55,
-      attributionControl: { compact: true }, maxPitch: 70,
+      container: el, style: this.vector ? style : RASTER_STYLE, center: [100.5018, 13.7563], zoom: 12, pitch: 66,
+      attributionControl: { compact: true }, maxPitch: 80,
     });
     this.lines = 0;
     // a pinch sets how close the chase camera sits from then on
+    this.cam = 'heli';
     this.map.on('zoomend', e => { if (e.originalEvent) this.manualZoom = this.map.getZoom(); });
     this.ready = new Promise(res => this.map.on('load', () => {
-      if (this.vector) add3dBuildings(this.map, theme, 0.75);
+      if (this.vector) add3dBuildings(this.map, theme, 0.9);
       this.before = this.vector ? labelLayerId(this.map) : undefined;
       res();
     }));
@@ -82,7 +83,7 @@ export class Map3D {
     // frame it as if flat, then tilt and step back a little so the far side still fits
     const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: this.map.getBearing() });
     if (!cam) return;
-    const opts = { center: cam.center, zoom: Math.min(18, cam.zoom - 0.4), pitch: 55, bearing: this.map.getBearing() };
+    const opts = { center: cam.center, zoom: Math.min(18, cam.zoom - 0.8), pitch: 66, bearing: this.map.getBearing() };
     if (duration) this.map.easeTo({ ...opts, duration }); else this.map.jumpTo(opts);
   }
 
@@ -93,8 +94,8 @@ export class Map3D {
     const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: this.map.getBearing() });
     if (!cam) return;
     const c = this.map.getCenter(), z = this.map.getZoom(), tc = maplibregl.LngLat.convert(cam.center);
-    const tz = Math.min(18, cam.zoom - 0.6), k = 0.25;
-    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * k, c.lat + (tc.lat - c.lat) * k], zoom: z + (tz - z) * k, pitch: 55 });
+    const tz = Math.min(18, cam.zoom - 0.9), k = 0.25;
+    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * k, c.lat + (tc.lat - c.lat) * k], zoom: z + (tz - z) * k, pitch: 66 });
   }
 
   // chase camera: behind the car, facing where it's going (heading smoothed so it doesn't swing)
@@ -102,10 +103,14 @@ export class Map3D {
     if (from && (from[0] !== la || from[1] !== lo)) {
       const h = bearing(from[0], from[1], la, lo);
       if (this.heading == null) this.heading = h;
-      else { const d = ((h - this.heading + 540) % 360) - 180; this.heading = (this.heading + d * 0.08 + 360) % 360; }
+      else { const d = ((h - this.heading + 540) % 360) - 180; this.heading = (this.heading + d * (this.cam === 'street' ? 0.08 : 0.035) + 360) % 360; }
     }
-    const opts = { center: [lo, la], zoom: this.manualZoom ?? 17.6, pitch: 62, bearing: this.heading ?? this.map.getBearing() };
-    if (duration) this.map.easeTo({ ...opts, duration }); else this.map.jumpTo(opts);
+    // 'heli': drone footage, low behind the car looking along the road; 'street': closer, a little higher
+    const street = this.cam === 'street';
+    const opts = { center: [lo, la], zoom: this.manualZoom ?? (street ? 17.8 : 17.2), pitch: street ? 62 : 74, bearing: this.heading ?? this.map.getBearing() };
+    // the car sits in the lower part of the picture, with the road ahead above it
+    opts.offset = [0, this.map.getContainer().clientHeight * 0.2];
+    this.map.easeTo({ ...opts, duration });
   }
 
   inView([la, lo], inset = 0.15) {

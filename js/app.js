@@ -16,7 +16,7 @@ import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D } from './map3d.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 2:30 AM';
+export const APP_VERSION = '24 Nov 2026, 3:00 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -544,7 +544,7 @@ function renderDrive(drive, { own, save }) {
       ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Drive name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
     </div>
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d">3D</button>' : ''}</div>
+    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
@@ -632,15 +632,24 @@ function renderDrive(drive, { own, save }) {
   const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
   const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = Math.round(v); });
   const prevOf = i => { const q = A.pts[Math.max(0, i - 4)]; return [q.la, q.lo]; };
+  // camera views: helicopter (default), street level, or the flat map
+  const VIEWS = { heli: '🚁 Drone', street: '🚗 Street', '2d': '🗺 2D' };
+  let viewMode = store.settings().replayView || 'heli';
+  async function setView(mode) {
+    viewMode = mode;
+    store.saveSettings({ ...store.settings(), replayView: mode });
+    if ($('#v3d')) $('#v3d').textContent = VIEWS[mode];
+    if (mode === '2d') return set3D(false);
+    await set3D(true);
+    if (m3) { m3.cam = mode; m3.manualZoom = null; const p = A.pts[idx]; m3.follow([p.la, p.lo], idx ? prevOf(idx) : null, { duration: 600 }); }
+  }
   async function set3D(on) {
-    store.saveSettings({ ...store.settings(), replay3d: on });
     if (!$('#v3d')) return;
-    $('#v3d').textContent = on ? '2D' : '3D';
     if (!on) { if (m3) { m3.remove(); m3 = m3dot = m3trail = null; } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
     if (m3) return;
     $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
     try { m3 = await open3D($('#map3d')); }
-    catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); return set3D(false); }
+    catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); viewMode = '2d'; if ($('#v3d')) $('#v3d').textContent = VIEWS['2d']; return set3D(false); }
     if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
     m3.addLines(lines);
     pins.forEach(p => m3.pin(p.ll, p.fill, p.title));
@@ -652,7 +661,7 @@ function renderDrive(drive, { own, save }) {
     setSpd(p.v);
     m3.follow([p.la, p.lo], idx ? prevOf(idx) : [A.pts[Math.min(4, A.pts.length - 1)].la, A.pts[Math.min(4, A.pts.length - 1)].lo].map((x, k) => 2 * [p.la, p.lo][k] - x));
   }
-  if ($('#v3d')) $('#v3d').onclick = () => set3D(!m3);
+  if ($('#v3d')) $('#v3d').onclick = () => setView({ heli: 'street', street: '2d', '2d': 'heli' }[viewMode]);
 
   // replay + charts
   const cs = $('#cs'), cg = $('#cg'), scrub = $('#scrub'), readout = $('#readout');
@@ -757,7 +766,7 @@ function renderDrive(drive, { own, save }) {
       location.hash = '#/';
     };
   }
-  if (store.settings().replay3d && webglOk()) set3D(true);
+  if (webglOk()) setView(viewMode); else viewMode = '2d';
   cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 
   // other drives on the same route: yours, and friends' drives you've saved
@@ -868,7 +877,7 @@ function renderRace(group, fromHash) {
       <div class="map race-map" id="map"></div>
       <div class="map race-map map3d" id="map3d" hidden></div>
       <div class="race-clock" id="clock">0:00</div>
-      ${webglOk() ? '<button class="btn small ghost view3d-btn race-3d" id="v3d">3D</button>' : ''}
+      ${webglOk() ? '<button class="btn small ghost view3d-btn race-3d" id="v3d">🗺 2D</button>' : ''}
       <button class="btn small ghost race-fit" id="fitAll" hidden>Show everyone</button>
     </div>
     <div class="replay">
@@ -918,9 +927,9 @@ function renderRace(group, fromHash) {
   // 3D view: same lines and dots on a tilted map with buildings
   let m3 = null;
   async function set3D(on) {
-    store.saveSettings({ ...store.settings(), replay3d: on });
+    store.saveSettings({ ...store.settings(), raceView: on ? '3d' : '2d' });
     if (!$('#v3d')) return;
-    $('#v3d').textContent = on ? '2D' : '3D';
+    $('#v3d').textContent = on ? '🚁 Drone' : '🗺 2D';
     if (!on) { if (m3) { m3.remove(); m3 = null; dots.forEach(d => { d.m3 = d.t3 = null; }); } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
     if (m3) return;
     $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
@@ -1007,7 +1016,7 @@ function renderRace(group, fromHash) {
   $('#scrub').oninput = e => { stop(); t = +e.target.value; draw(); };
   $('#speed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   draw();
-  if (store.settings().replay3d && webglOk()) set3D(true);
+  if (webglOk() && store.settings().raceView !== '2d') set3D(true);
   cleanup = () => { stop(); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 }
 

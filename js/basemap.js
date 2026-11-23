@@ -55,7 +55,7 @@ export function add3dBuildings(map, theme, opacity = 0.8) {
       filter: ['!', ['has', 'hide_3d']],
       paint: {
         'fill-extrusion-base': ['get', 'render_min_height'], 'fill-extrusion-height': ['get', 'render_height'],
-        'fill-extrusion-color': theme === 'dark' ? '#2b3140' : 'hsl(35,8%,85%)', 'fill-extrusion-opacity': opacity,
+        'fill-extrusion-color': theme === 'dark' ? '#414a5e' : 'hsl(35,8%,85%)', 'fill-extrusion-opacity': opacity,
       },
     }, firstSymbol && firstSymbol.id);
   } else map.setPaintProperty('building-3d', 'fill-extrusion-opacity', opacity);
