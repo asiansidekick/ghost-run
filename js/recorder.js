@@ -1,6 +1,7 @@
 // Records a drive: GPS fixes, motion sensor peaks between fixes, screen wake lock, auto-stop.
 import * as store from './store.js';
 import { hav } from './analysis.js';
+import { GuideTracker } from './guide.js';
 
 const MAX_ACCURACY_M = 50;
 const FLUSH_EVERY = 10;
@@ -17,15 +18,17 @@ export class Recorder extends EventTarget {
     this.distance = 0; this.last = null; this.startedAt = null;
     this.speedKmh = 0; this.accuracy = null; this.motionPeak = null; this.motionOk = false;
     this.stillSince = null; this.hasMoved = false; this.wakeLock = null; this.error = null;
+    this.track = []; this.tracker = null; this.guide = null; this.guideState = null; this.lastFixAt = null;
   }
 
   // Must be called straight from a tap: iPhone only shows the motion permission prompt then.
-  async start(resumeId) {
+  async start(resumeId, guide = null) {
     if (this.active) return this.id;
     const motionPerm = typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'
       ? DeviceMotionEvent.requestPermission().catch(() => 'denied') : Promise.resolve('granted');
     this.reset();
     this.active = true;
+    if (guide && !resumeId) { this.guide = guide; this.tracker = new GuideTracker(guide); }
     const s = store.settings();
     this.autoStopMs = (s.autoStopMin || 5) * 60000;
     if (resumeId) {
@@ -36,11 +39,13 @@ export class Recorder extends EventTarget {
       this.count = pts.length;
       for (let i = 1; i < pts.length; i++) this.distance += hav(pts[i - 1].la, pts[i - 1].lo, pts[i].la, pts[i].lo);
       this.last = pts[pts.length - 1] || null;
+      this.track = pts.map(p => [p.la, p.lo]);
       this.hasMoved = true;
+      if (d.guide) { this.guide = d.guide; this.tracker = new GuideTracker(d.guide, { anywhere: true }); }
     } else {
       this.id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       this.startedAt = Date.now();
-      await store.putDrive({ id: this.id, status: 'recording', startedAt: this.startedAt, name: '' });
+      await store.putDrive({ id: this.id, status: 'recording', startedAt: this.startedAt, name: '', guide: guide || undefined });
     }
     if ((await motionPerm) === 'granted') {
       this.onMotion = e => {
@@ -91,6 +96,9 @@ export class Recorder extends EventTarget {
     }
     this.speedKmh = kmh;
     this.last = p;
+    this.lastFixAt = Date.now();
+    this.track.push([p.la, p.lo]);
+    if (this.tracker) this.guideState = this.tracker.update(p);
     this.buf.push(p);
     this.count++;
     if (this.buf.length >= FLUSH_EVERY) this.flush();

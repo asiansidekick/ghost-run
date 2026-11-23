@@ -8,6 +8,7 @@ import { directionsFor, googleMapsUrl } from './directions.js';
 import { gpx, csv, saveFile } from './export.js';
 import { sampleDrive } from './sample.js';
 import { compareGroup, positionAt } from './compare.js';
+import { guideFromDrive, guideFromRoute } from './guide.js';
 
 const BANGKOK = [13.7563, 100.5018];
 const $ = (s, el = document) => el.querySelector(s);
@@ -54,6 +55,7 @@ async function route() {
     if (h === '#/record') return recordView();
     if (h.startsWith('#/drive/')) return await ownDriveView(decodeURIComponent(h.slice(8)));
     if (h === '#/settings') return settingsView();
+    if (h.startsWith('#/route/')) { const r = await store.getDrive(decodeURIComponent(h.slice(8))); if (r) return renderRoute(r); location.hash = '#/'; return; }
     if (h.startsWith('#/race/')) return await raceFromStore(decodeURIComponent(h.slice(7)));
     return await homeView();
   } catch (e) {
@@ -82,6 +84,7 @@ async function homeView() {
   const drives = (await store.allDrives()).sort((a, b) => b.startedAt - a.startedAt);
   const interrupted = drives.filter(d => d.status === 'recording' && d.id !== recorder.id);
   const done = drives.filter(d => d.status === 'done');
+  const routes = drives.filter(d => d.status === 'route');
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   view.innerHTML = `
     ${interrupted.map(d => `
@@ -95,12 +98,15 @@ async function homeView() {
       </section>`).join('')}
     <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start a drive'}</a>
     ${!standalone ? `<p class="hint">Tip: add Ghost Run to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
+    ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
+        <div class="drive-name">${esc(r.name)}</div>
+        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
     <h2 class="section-title">My drives</h2>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
       return `<li><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
         <div class="drive-name">${esc(driveTitle(d))}</div>
-        <div class="drive-meta">${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
+        <div class="drive-meta">${d.guide ? `Followed ${esc(d.guide.name)} · ` : ''}${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
         ${A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
       </a></li>`;
     }).join('')}</ul>` : `
@@ -127,47 +133,113 @@ async function homeView() {
 }
 
 // ---------- record ----------
+let pendingGuide = null;
+function followGuide(guide) {
+  if (recorder.active) { toast('Stop the current drive first.'); return; }
+  pendingGuide = guide;
+  if (location.hash === '#/record') route(); else location.hash = '#/record';
+}
+
 function recordView() {
   if (!recorder.active) {
+    const g = pendingGuide;
     view.innerHTML = `
+      ${g ? `<section class="card banner follow-banner">
+        <div><strong>Following:</strong> ${esc(g.name)}${g.points[0].t != null ? '<br><span class="small">A ghost car will drive it alongside you, starting when you reach the start of the route.</span>' : ''}</div>
+        <button class="btn small ghost" id="nofollow">Don't follow</button>
+      </section>` : ''}
       <section class="card">
         <h1>Before you set off</h1>
         <ol class="steps">
           <li>Put the phone in a fixed cradle, ideally plugged in to charge.</li>
           <li>Tap Start while you're parked. Allow location and motion access if asked.</li>
-          <li>Leave this page open on screen while you drive. The screen stays on by itself.</li>
+          <li>Leave this page open on screen while you drive. The screen stays on and the map follows you.</li>
           <li>Once parked, hold Stop. If you forget, it stops on its own after ${store.settings().autoStopMin} minutes parked.</li>
         </ol>
         <p class="muted small">Don't touch the phone while driving. Taking a call or switching apps pauses recording, and the gap shows on the map.</p>
       </section>
       <button class="btn big start" id="go">Start</button>`;
-    $('#go').onclick = () => { recorder.start(); recordView(); };
+    if ($('#nofollow')) $('#nofollow').onclick = () => { pendingGuide = null; recordView(); };
+    $('#go').onclick = () => { recorder.start(null, pendingGuide); pendingGuide = null; recordView(); };
     return;
   }
+  const g = recorder.guide;
   view.innerHTML = `
-    <section class="live">
-      <div class="live-status" id="ls">Waiting for GPS…</div>
-      <div class="live-speed"><span id="lv">0</span><small>km/h</small></div>
-      <div class="live-grid">
-        <div><span id="lt">0:00</span><small>time</small></div>
-        <div><span id="ld">0 m</span><small>distance</small></div>
-        <div><span id="la">–</span><small>GPS accuracy</small></div>
+    <section class="live live-map-mode">
+      <div class="live-top">
+        <div class="live-speed-sm"><span id="lv">0</span><small>km/h</small></div>
+        <div class="live-mini">
+          <div><span id="lt">0:00</span><small>time</small></div>
+          <div><span id="ld">0 m</span><small>distance</small></div>
+        </div>
+        <div class="live-status" id="ls">Waiting for GPS…</div>
+      </div>
+      <div class="live-map-wrap">
+        <div id="lmap" class="live-map"></div>
+        <button class="btn small ghost recenter" id="recenter" hidden>Re-centre</button>
+        ${g ? `<div class="guide-hud" id="gh"></div>` : ''}
       </div>
       <div class="live-flags" id="lf"></div>
       <button class="btn big hold" id="stop"><span class="hold-fill"></span><span class="hold-label">Hold to stop</span></button>
     </section>`;
+  const map = newMap($('#lmap'));
+  const blue = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  let guideLine = null;
+  if (g) {
+    guideLine = L.polyline(g.points.map(p => [p.la, p.lo]), { color: '#a78bfa', weight: 9, opacity: 0.45 }).addTo(map);
+    const gp = g.points;
+    L.circleMarker([gp[0].la, gp[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).addTo(map);
+    L.circleMarker([gp[gp.length - 1].la, gp[gp.length - 1].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).addTo(map);
+  }
+  const trail = L.polyline(recorder.track, { color: blue, weight: 5 }).addTo(map);
+  const me = L.marker(recorder.last ? [recorder.last.la, recorder.last.lo] : BANGKOK, { icon: dotIcon(blue), zIndexOffset: 1000, interactive: false }).addTo(map);
+  const ghost = g && g.points[0].t != null
+    ? L.marker([g.points[0].la, g.points[0].lo], { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot ghost-dot" style="--c:#e2e8f0"><i></i><span class="spd">Ghost</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 900, interactive: false }).addTo(map)
+    : null;
+  if (recorder.last) map.setView([recorder.last.la, recorder.last.lo], 16);
+  else if (guideLine) map.fitBounds(guideLine.getBounds(), { padding: [20, 20] });
+  let follow = true;
+  map.on('dragstart', () => { follow = false; $('#recenter').hidden = false; });
+  $('#recenter').onclick = () => { follow = true; $('#recenter').hidden = true; if (recorder.last) map.setView([recorder.last.la, recorder.last.lo], Math.max(map.getZoom(), 16)); };
+  let lastCount = -1;
   const upd = () => {
     if (!recorder.active) return;
     $('#lv').textContent = Math.round(recorder.speedKmh);
     $('#ld').textContent = fmtKm(recorder.distance);
-    $('#la').textContent = recorder.accuracy != null ? `±${Math.round(recorder.accuracy)} m` : '–';
-    $('#ls').textContent = recorder.error || (recorder.count ? 'Recording' : 'Waiting for GPS…');
+    $('#ls').textContent = recorder.error || (recorder.count ? `Recording · GPS ±${Math.round(recorder.accuracy ?? 0)} m` : 'Waiting for GPS…');
     $('#ls').className = 'live-status ' + (recorder.error ? 'bad' : recorder.count ? 'ok' : '');
     $('#lf').innerHTML = [
       recorder.wakeLock ? 'Screen kept on' : 'Screen may sleep: keep this page open',
       recorder.motionOk ? 'Motion sensor on' : 'Using GPS for braking',
     ].map(t => `<span>${t}</span>`).join('');
+    if (recorder.count !== lastCount && recorder.last) {
+      const first = lastCount <= 0;
+      lastCount = recorder.count;
+      const ll = [recorder.last.la, recorder.last.lo];
+      me.setLatLng(ll);
+      const sp = me.getElement()?.querySelector('.spd'); if (sp) sp.textContent = Math.round(recorder.speedKmh);
+      trail.setLatLngs(recorder.track);
+      if (follow) first ? map.setView(ll, 16) : map.panTo(ll, { animate: true, duration: 0.5 });
+    }
+    if (g) {
+      const st = recorder.guideState;
+      let html;
+      if (!st || !st.started) html = `<b>Head to the start</b><span>${st && st.distToStart != null ? fmtKm(st.distToStart) + ' away' : 'Waiting for GPS'}</span>`;
+      else if (st.finished) html = `<b>🏁 Route done</b>${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
+      else html = `${st.off ? `<b class="bad">Off the route (${fmtKm(st.offBy)})</b>` : `<b>${fmtKm(st.remaining)} to go</b>`}${st.deltaS != null ? `<span class="${st.deltaS <= 0 ? 'good' : 'bad'}">${fmtGap(st.deltaS)}</span>` : ''}`;
+      $('#gh').innerHTML = html;
+    }
   };
+  // the ghost glides between updates, timed from the latest GPS fix
+  const ghostTick = ghost ? setInterval(() => {
+    const tr = recorder.tracker;
+    if (!tr || !recorder.last || recorder.lastFixAt == null) return;
+    const gp = tr.ghostAt(recorder.last.t + (Date.now() - recorder.lastFixAt));
+    if (!gp) return;
+    ghost.setLatLng([gp.la, gp.lo]);
+    const sp = ghost.getElement()?.querySelector('.spd');
+    if (sp) sp.textContent = gp.done ? 'Ghost 🏁' : `Ghost ${Math.round(gp.v)}`;
+  }, 250) : null;
   const tick = setInterval(() => { if (recorder.startedAt) $('#lt').textContent = fmtClock(Date.now() - recorder.startedAt); }, 1000);
   recorder.addEventListener('update', upd);
   upd();
@@ -187,7 +259,13 @@ function recordView() {
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => btn.addEventListener(ev, cancel));
   btn.addEventListener('contextmenu', e => e.preventDefault());
-  cleanup = () => { clearInterval(tick); recorder.removeEventListener('update', upd); };
+  cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); map.remove(); };
+}
+
+function fmtGap(s) {
+  const a = Math.abs(Math.round(s));
+  const txt = a >= 60 ? `${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}` : `${a} s`;
+  return a < 1 ? 'Level with the ghost' : s > 0 ? `${txt} behind the ghost` : `${txt} ahead of the ghost`;
 }
 
 // ---------- drive page ----------
@@ -280,6 +358,7 @@ function renderDrive(drive, { own, save }) {
     <p class="muted small chart-key">Above the line is speeding up, below is braking. Dotted lines mark hard acceleration (0.30 g) and hard braking (0.35 g).</p>
 
     <section class="actions">
+      <button class="btn start-alt" id="follow">Follow this route with a ghost</button>
       <button class="btn" id="shareDrive">Share this drive</button>
       <button class="btn ghost" id="shareRoute">Share just the route</button>
       ${!own ? `<button class="btn ghost" id="saveCopy">Save to my drives</button>` : ''}
@@ -385,6 +464,7 @@ function renderDrive(drive, { own, save }) {
     const r = await shareLink(shareUrl('r', payload), 'Route: ' + driveTitle(drive), `A route to drive: ${driveTitle(drive)}`);
     if (r === 'copied') toast('Route link copied. Your friend gets a map and directions.');
   };
+  $('#follow').onclick = () => followGuide(guideFromDrive(drive, driveTitle(drive)));
   const fname = (driveTitle(drive).replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'drive').slice(0, 60);
   $('#gpx').onclick = () => saveFile(gpx(drive, A), fname + '.gpx', 'application/gpx+xml');
   $('#csv').onclick = () => saveFile(csv(drive, A), fname + '.csv', 'text/csv');
@@ -559,11 +639,22 @@ function renderRoute(r) {
     <div class="map" id="map"></div>
     <section class="actions">
       <a class="btn" href="${esc(googleMapsUrl(pts))}" target="_blank" rel="noopener">Open in Google Maps</a>
-      <a class="btn ghost" href="#/record">Log my own drive</a>
+      <button class="btn start-alt" id="followRoute">Follow this route</button>
+      ${r.id ? `<button class="btn danger" id="delRoute">Remove from my routes</button>` : `<button class="btn ghost" id="saveRoute">Save to my routes</button>`}
     </section>
     <p class="muted small">Google Maps only takes a few stops along the way, so its route may differ a little from this one.</p>
     <h2 class="section-title">Directions</h2>
     <ol class="directions" id="dir"><li class="muted">Working out directions…</li></ol>`;
+  $('#followRoute').onclick = () => followGuide(guideFromRoute(r));
+  if ($('#saveRoute')) $('#saveRoute').onclick = async e => {
+    const id = 'r' + Date.now().toString(36);
+    await store.putDrive({ id, status: 'route', name: r.name || 'Shared route', from: r.from || '', startedAt: Date.now(), points: r.points });
+    e.target.outerHTML = '<span class="muted small">Saved. It’s on your home screen under My routes.</span>';
+  };
+  if ($('#delRoute')) $('#delRoute').onclick = async () => {
+    if (!confirm('Remove this route from your phone?')) return;
+    await store.deleteDrive(r.id); location.hash = '#/';
+  };
   const map = newMap($('#map'));
   const line = L.polyline(pts.map(p => [p.la, p.lo]), { color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), weight: 5 }).addTo(map);
   L.circleMarker([pts[0].la, pts[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
