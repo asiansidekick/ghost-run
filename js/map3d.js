@@ -21,7 +21,7 @@ export class Map3D {
     this.heading = null;
     this.map = new maplibregl.Map({
       container: el, style: this.vector ? style : RASTER_STYLE, center: [100.5018, 13.7563], zoom: 12, pitch: 66,
-      attributionControl: { compact: true }, maxPitch: 80,
+      attributionControl: { compact: true }, maxPitch: 85,
     });
     this.lines = 0;
     // a pinch sets how close the chase camera sits from then on
@@ -60,12 +60,17 @@ export class Map3D {
     };
   }
 
-  pin([la, lo], fill, title) {
-    const el = document.createElement('div');
-    el.className = 'pin3d';
-    el.style.background = fill;
-    if (title) el.title = title;
-    return new maplibregl.Marker({ element: el }).setLngLat([lo, la]).addTo(this.map);
+  // start, finish and hard-braking spots: drawn on the map itself, so far-off ones fade into the distance
+  pin([la, lo], fill) {
+    const f = { type: 'Feature', properties: { fill }, geometry: { type: 'Point', coordinates: [lo, la] } };
+    if (!this.pins) {
+      this.pins = { type: 'FeatureCollection', features: [f] };
+      this.map.addSource('pins', { type: 'geojson', data: this.pins });
+      this.map.addLayer({ id: 'pins', type: 'circle', source: 'pins', paint: {
+        'circle-color': ['get', 'fill'], 'circle-radius': 7, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2,
+        'circle-pitch-alignment': 'map', 'circle-pitch-scale': 'map',
+      } });
+    } else { this.pins.features.push(f); this.map.getSource('pins').setData(this.pins); }
   }
 
   // a dot with the same look as on the flat map; returns a Leaflet-like { setLatLng, getElement }
@@ -99,17 +104,30 @@ export class Map3D {
   }
 
   // chase camera: behind the car, facing where it's going (heading smoothed so it doesn't swing)
-  follow([la, lo], from, { duration = 0 } = {}) {
+  follow([la, lo], from, { duration = 0, speed = null } = {}) {
+    // 'heli' is the chase camera (race footage): low and tight behind the car, swinging round with it;
+    // 'street' is a calmer, higher view
+    const chase = this.cam !== 'street';
     if (from && (from[0] !== la || from[1] !== lo)) {
       const h = bearing(from[0], from[1], la, lo);
       if (this.heading == null) this.heading = h;
-      else { const d = ((h - this.heading + 540) % 360) - 180; this.heading = (this.heading + d * (this.cam === 'street' ? 0.08 : 0.035) + 360) % 360; }
+      else {
+        const d = ((h - this.heading + 540) % 360) - 180;
+        this.heading = (this.heading + d * (chase ? 0.14 : 0.06) + 360) % 360;
+        // how hard we're turning (eased): used to swing the camera out wide through bends
+        this.turn = (this.turn || 0) + (Math.max(-60, Math.min(60, d)) - (this.turn || 0)) * 0.08;
+      }
     }
-    // 'heli': drone footage, low behind the car looking along the road; 'street': closer, a little higher
-    const street = this.cam === 'street';
-    const opts = { center: [lo, la], zoom: this.manualZoom ?? (street ? 17.8 : 17.2), pitch: street ? 62 : 74, bearing: this.heading ?? this.map.getBearing() };
-    // the car sits in the lower part of the picture, with the road ahead above it
-    opts.offset = [0, this.map.getContainer().clientHeight * 0.2];
+    if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * 0.05;
+    // pulls back a little as the speed rises, like a camera car keeping pace
+    const pull = Math.min(1, (this.speed || 0) / 110) * 0.9;
+    const opts = { center: [lo, la], zoom: this.manualZoom ?? (chase ? 18.4 - pull : 17.4), pitch: chase ? 78 : 60, bearing: this.heading ?? this.map.getBearing() };
+    const el = this.map.getContainer();
+    el.classList.toggle('cam-chase', chase);
+    // the car sits low in the picture, with the road ahead filling the rest
+    // through a bend the car slides toward the inside of the picture, as if the camera car swings wide
+    const swing = chase ? -(this.turn || 0) / 60 * el.clientWidth * 0.18 : 0;
+    opts.offset = [swing, el.clientHeight * (chase ? 0.24 : 0.15)];
     this.map.easeTo({ ...opts, duration });
   }
 

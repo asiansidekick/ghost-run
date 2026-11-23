@@ -323,3 +323,9 @@ h2 { font-size: 1.1rem; }
 .race-3d { top: auto; bottom: 8px; left: 8px; right: auto; }
 .pin3d { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
 .dot3d { width: 26px; height: 26px; }
+/* chase camera: the car is drawn as an arrow pointing up the road */
+.cam-chase .dot3d .live-dot i { inset: 1px 3px; border: 0; border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 50% 78%, 0 100%); filter: drop-shadow(0 0 1px #fff); }
+.cam-chase .dot3d .live-dot::before { display: none; }
+.cam-chase .dot3d .live-dot { transform: scale(1.5); }
+.cam-chase .dot3d .live-dot i { background: #fff; filter: drop-shadow(0 0 2px var(--c)) drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
+.cam-chase .dot3d .live-dot .spd { transform: translate(1px, 0) scale(0.67); transform-origin: left bottom; }

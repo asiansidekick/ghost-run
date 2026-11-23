@@ -16,7 +16,7 @@ import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D } from './map3d.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 3:00 AM';
+export const APP_VERSION = '24 Nov 2026, 3:15 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -633,7 +633,7 @@ function renderDrive(drive, { own, save }) {
   const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = Math.round(v); });
   const prevOf = i => { const q = A.pts[Math.max(0, i - 4)]; return [q.la, q.lo]; };
   // camera views: helicopter (default), street level, or the flat map
-  const VIEWS = { heli: '🚁 Drone', street: '🚗 Street', '2d': '🗺 2D' };
+  const VIEWS = { heli: '🎥 Chase', street: '🚁 High', '2d': '🗺 2D' };
   let viewMode = store.settings().replayView || 'heli';
   async function setView(mode) {
     viewMode = mode;
@@ -712,7 +712,7 @@ function renderDrive(drive, { own, save }) {
       if (m3) {
         m3dot.setLatLng(ll);
         m3trail.setLatLngs([...trailPts, ll]);
-        if (!m3.manual) m3.follow(ll, prevOf(j));
+        if (!m3.manual) m3.follow(ll, prevOf(j), { speed: a.v + f * (b.v - a.v) });
       }
       setSpd(a.v + f * (b.v - a.v));
       gSoft = ease(gSoft, a.a + f * (b.a - a.a));
