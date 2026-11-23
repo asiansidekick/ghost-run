@@ -830,7 +830,7 @@ function settingsView() {
       <div class="row">
         <button class="btn" id="backup">Back up all drives</button>
         <button class="btn ghost" id="restoreBtn">Restore or import a file</button>
-        <input type="file" id="restoreFile" accept=".json,.gpx,.csv,application/json,application/gpx+xml,text/csv,text/xml" hidden>
+        <input type="file" id="restoreFile" hidden>
       </div>
       <p class="muted small" id="backupInfo"></p>
       <p class="muted small">Restore takes a backup file, or a single drive exported as GPX or CSV (from this app or another GPS logger).</p>
