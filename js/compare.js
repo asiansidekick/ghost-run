@@ -109,14 +109,14 @@ export function compareGroup(ref, candidates, myName) {
 export function positionAt(e, elapsed) {
   const P = e.A.pts;
   const t0 = P[e.i0].t, target = t0 + elapsed;
-  if (target >= P[e.i1].t) { const p = P[e.i1]; return { la: p.la, lo: p.lo, v: p.v, over: p.over, done: true, prog: p.dist - P[e.i0].dist }; }
+  if (target >= P[e.i1].t) { const p = P[e.i1]; return { la: p.la, lo: p.lo, v: p.v, g: 0, over: p.over, done: true, prog: p.dist - P[e.i0].dist }; }
   let lo = e.i0, hi = e.i1;
   while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (P[mid].t <= target) lo = mid; else hi = mid; }
   const a = P[lo], b = P[hi];
   const f = b.t > a.t ? (target - a.t) / (b.t - a.t) : 0;
   return {
     la: a.la + f * (b.la - a.la), lo: a.lo + f * (b.lo - a.lo),
-    v: a.v + f * (b.v - a.v), over: a.over, done: false,
+    v: a.v + f * (b.v - a.v), g: a.a + f * (b.a - a.a), over: a.over, done: false,
     prog: a.dist + f * (b.dist - a.dist) - P[e.i0].dist,
   };
 }

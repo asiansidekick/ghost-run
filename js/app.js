@@ -14,7 +14,7 @@ import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '23 Nov 2026, 11:30 PM';
+export const APP_VERSION = '24 Nov 2026, 12:00 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -543,7 +543,7 @@ function renderDrive(drive, { own, save }) {
       ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Drive name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
     </div>
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map" id="map"></div>
+    <div class="map-box"><div class="map" id="map"></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div></div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
@@ -635,7 +635,7 @@ function renderDrive(drive, { own, save }) {
       trail.setLatLngs(idx ? A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]) : []);
     }
     dotEl()?.classList.toggle('over', !!p.over);
-    if (!playing) setSpd(p.v);
+    if (!playing) { setSpd(p.v); gSoft = p.a; setGBar($('#gbar'), p.a); }
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
     readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${Math.round(p.v)}</b> km/h</span><span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span><span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>`;
@@ -645,7 +645,7 @@ function renderDrive(drive, { own, save }) {
   const onChart = c => e => { stopPlay(); setIdx(xToIndex(c, A, e.clientX), true); };
   for (const c of [cs, cg]) { c.addEventListener('pointerdown', onChart(c)); c.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'touch') onChart(c)(e); }); }
   // replay (20× real time to start); the dot glides between GPS fixes and leaves a trail
-  let playing = false, raf = null, rate = 20;
+  let playing = false, raf = null, rate = 20, gSoft = null;
   $('#rspeed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   const stopPlay = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; dotEl()?.classList.remove('moving'); };
   $('#play').onclick = () => {
@@ -666,6 +666,8 @@ function renderDrive(drive, { own, save }) {
       const ll = [a.la + f * (b.la - a.la), a.lo + f * (b.lo - a.lo)];
       marker.setLatLng(ll);
       setSpd(a.v + f * (b.v - a.v));
+      gSoft = ease(gSoft, a.a + f * (b.a - a.a));
+      setGBar($('#gbar'), gSoft);
       trail.setLatLngs([...trailPts, ll]);
       if (j !== idx) setIdx(j, true);
       if (j >= A.pts.length - 1) { stopPlay(); return; }
@@ -730,6 +732,21 @@ function renderDrive(drive, { own, save }) {
     renderCompareList(box, group, g2 => renderRace(g2));
   });
 }
+
+// The acceleration / braking bar: grows right (green) when speeding up, left (red) when braking.
+// Full width is 0.5 g; it turns brighter past the "hard" thresholds. Eased so it moves softly.
+const G_FULL = 0.5;
+const gBarHTML = (mini = false) => `<div class="gbar${mini ? ' mini' : ''}">${mini ? '' : '<span class="gb-lbl">Braking</span>'}<div class="gb-track"><i class="gb-mid"></i><div class="gb-fill"></div></div>${mini ? '' : '<span class="gb-lbl">Accel</span><span class="gb-val">0.00 g</span>'}</div>`;
+const gFillStyle = g => { const w = Math.min(1, Math.abs(g) / G_FULL) * 50; return `left:${g < 0 ? 50 - w : 50}%;width:${w}%`; };
+const gFillClass = g => 'gb-fill ' + (g < 0 ? 'brake' : 'accel') + (g >= 0.3 || g <= -0.35 ? ' hard' : '');
+function setGBar(el, g) {
+  if (!el) return;
+  const f = el.querySelector('.gb-fill');
+  f.style.cssText = gFillStyle(g); f.className = gFillClass(g);
+  const v = el.querySelector('.gb-val');
+  if (v) v.textContent = `${g >= 0 ? '+' : '−'}${Math.abs(g).toFixed(2)} g`;
+}
+const ease = (prev, g, k = 0.18) => prev == null ? g : prev + (g - prev) * k;
 
 function dotIcon(color) {
   return L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot" style="--c:${color}"><i></i><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
@@ -859,6 +876,7 @@ function renderRace(group, fromHash) {
       if (sp) sp.textContent = p.done ? '🏁' : Math.round(p.v);
       const P = e.A.pts, end = Math.min(e.i1, e.i0 + Math.max(0, upperIdx(P, e.i0, e.i1, P[e.i0].t + t)));
       trail.setLatLngs([...P.slice(e.i0, end + 1).map(q => [q.la, q.lo]), [p.la, p.lo]]);
+      e.gSoft = playing ? ease(e.gSoft, p.g) : p.g;
       return { e, p };
     });
     if (group.sameRoute !== false) rows.sort((a, b) => (b.p.done - a.p.done) || (a.p.done ? a.e.ms - b.e.ms : b.p.prog - a.p.prog));
@@ -869,6 +887,7 @@ function renderRace(group, fromHash) {
         <span class="hud-name">${esc(group.sameRoute === false || dupNames ? e.label : e.label.split(',')[0])}</span>
         <span class="hud-val">${p.done ? `🏁 ${fmtClock(e.ms)}` : `${Math.round(p.v)} km/h`}</span>
         <span class="hud-gap">${group.sameRoute === false ? fmtKm(p.prog) : k === 0 ? 'lead' : p.done ? '' : `−${fmtKm(Math.max(0, lead.p.prog - p.prog))}`}</span>
+        <div class="gbar mini"><div class="gb-track"><i class="gb-mid"></i><div class="${gFillClass(e.gSoft || 0)}" style="${gFillStyle(p.done ? 0 : e.gSoft || 0)}"></div></div></div>
       </div>`).join('');
   };
   const stop = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; };

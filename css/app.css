@@ -283,3 +283,18 @@ h2 { font-size: 1.1rem; }
 .map-chip { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 500; pointer-events: none; max-width: calc(100% - 24px); padding: 7px 12px; border-radius: 999px; background: rgba(15,17,21,0.85); color: #fff; font-size: 0.8rem; font-weight: 600; text-align: center; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.4); }
 /* no iPhone link preview when holding a finger on a drive or route; holding a drive picks it instead */
 .drive-item, .drive-list a { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* acceleration / braking bar on replays */
+.map-box { position: relative; }
+.gbar-overlay { position: absolute; left: 10px; right: 58px; bottom: 26px; z-index: 600; pointer-events: none; padding: 8px 12px; border-radius: 14px; background: rgba(15, 17, 21, 0.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.gbar { display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gb-lbl { flex: none; }
+.gb-val { flex: none; min-width: 58px; text-align: right; color: var(--text); font-weight: 700; font-size: 0.85rem; }
+.gb-track { position: relative; flex: 1; height: 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+.gb-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(255, 255, 255, 0.35); }
+.gb-fill { position: absolute; top: 0; bottom: 0; border-radius: 999px; opacity: 0.75; transition: opacity .3s; }
+.gb-fill.accel { background: linear-gradient(90deg, rgba(34, 197, 94, 0.25), #22c55e); box-shadow: 0 0 10px rgba(34, 197, 94, 0.6); }
+.gb-fill.brake { background: linear-gradient(270deg, rgba(239, 68, 68, 0.25), #ef4444); box-shadow: 0 0 10px rgba(239, 68, 68, 0.6); }
+.gb-fill.hard { opacity: 1; filter: brightness(1.25); }
+.gbar.mini { grid-column: 1 / -1; }
+.gbar.mini .gb-track { height: 5px; }
