@@ -142,7 +142,8 @@ export function shareUrl(kind, payload) {
 
 export async function shareLink(url, title, text) {
   if (navigator.share) {
-    try { await navigator.share({ title, text, url }); return 'shared'; }
+    // the link goes inside the text too: some apps (and Copy) keep only the text and drop the url field
+    try { await navigator.share({ title, text: `${text}\n${url}` }); return 'shared'; }
     catch (e) { if (e.name === 'AbortError') return 'cancelled'; }
   }
   try { await navigator.clipboard.writeText(url); return 'copied'; }
