@@ -263,6 +263,38 @@ function recordView() {
   cleanup = () => { clearInterval(tick); clearInterval(ghostTick); recorder.removeEventListener('update', upd); map.remove(); };
 }
 
+// A single drive from a GPX or CSV file (ours or another logger's). Returns null for anything else.
+function importTrack(text, filename = '') {
+  let pts = [];
+  const name = filename.replace(/\.(gpx|csv)$/i, '').replace(/[-_]+/g, ' ').trim();
+  if (/<gpx[\s>]/i.test(text)) {
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    const nodes = [...doc.getElementsByTagName('trkpt')];
+    const list = nodes.length ? nodes : [...doc.getElementsByTagName('rtept')];
+    pts = list.map(n => {
+      const time = n.getElementsByTagName('time')[0]?.textContent;
+      const sp = n.getElementsByTagName('speed')[0]?.textContent;
+      return { t: time ? Date.parse(time) : null, la: +n.getAttribute('lat'), lo: +n.getAttribute('lon'), s: sp != null && sp !== '' ? +sp : null, m: null };
+    });
+  } else if (/^\s*[^\n]*\blat\b[^\n]*\blon/i.test(text)) {
+    const rows = text.trim().split(/\r?\n/);
+    const head = rows.shift().split(',').map(h => h.trim().toLowerCase());
+    const col = re => head.findIndex(h => re.test(h));
+    const ti = col(/^time/), la = col(/^lat/), lo = col(/^(lon|lng)/), sp = col(/^speed_kmh$|^speed/);
+    pts = rows.map(r => r.split(',')).map(c => ({
+      t: ti >= 0 && c[ti] ? Date.parse(c[ti]) : null, la: +c[la], lo: +c[lo],
+      s: sp >= 0 && c[sp] !== '' ? (head[sp] === 'speed_kmh' ? +c[sp] / 3.6 : +c[sp]) : null, m: null,
+    }));
+  } else return null;
+  pts = pts.filter(p => isFinite(p.la) && isFinite(p.lo) && Math.abs(p.la) <= 90);
+  if (pts.length < 2) throw new Error('no track points');
+  const timed = pts.every(p => p.t && isFinite(p.t));
+  const id = 'i' + Date.now().toString(36);
+  if (!timed) return { id, status: 'route', name: name || 'Imported route', startedAt: Date.now(), points: pts.map(p => ({ la: p.la, lo: p.lo })) };
+  pts.sort((a, b) => a.t - b.t);
+  return { id, status: 'done', name: name || 'Imported drive', startedAt: pts[0].t, endedAt: pts[pts.length - 1].t, points: pts };
+}
+
 function fmtGap(s) {
   const a = Math.abs(Math.round(s));
   const txt = a >= 60 ? `${Math.floor(a / 60)}:${String(a % 60).padStart(2, '0')}` : `${a} s`;
@@ -707,10 +739,11 @@ function settingsView() {
       <p class="small">Drives are stored only in this copy of the app. On iPhone, Safari and each home-screen icon keep their own separate drives. Back up to a file to keep them safe or move them to another copy or phone.</p>
       <div class="row">
         <button class="btn" id="backup">Back up all drives</button>
-        <button class="btn ghost" id="restoreBtn">Restore from backup</button>
-        <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+        <button class="btn ghost" id="restoreBtn">Restore or import a file</button>
+        <input type="file" id="restoreFile" accept=".json,.gpx,.csv,application/json,application/gpx+xml,text/csv,text/xml" hidden>
       </div>
       <p class="muted small" id="backupInfo"></p>
+      <p class="muted small">Restore takes a backup file, or a single drive exported as GPX or CSV (from this app or another GPS logger).</p>
       <button class="btn danger" id="wipe">Delete all my drives</button>
     </section>
     <p class="muted small">Maps and road data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. Directions by OSRM.</p>`;
@@ -731,7 +764,15 @@ function settingsView() {
     const f = e.target.files[0];
     if (!f) return;
     try {
-      const data = JSON.parse(await f.text());
+      const text = await f.text();
+      const one = importTrack(text, f.name);
+      if (one) {
+        await store.putDrive(one);
+        toast('Drive imported.');
+        location.hash = (one.status === 'route' ? '#/route/' : '#/drive/') + one.id;
+        return;
+      }
+      const data = JSON.parse(text);
       if (data.app !== 'ghost-run' || !Array.isArray(data.drives)) throw new Error('not a Ghost Run backup');
       const have = await store.allDrives();
       const key = d => d.status + ':' + d.startedAt + ':' + (d.points?.length || 0);
@@ -745,7 +786,7 @@ function settingsView() {
       toast(added ? `Restored ${added} item${added === 1 ? '' : 's'}.` : 'Everything in that backup is already here.');
       if (added) setTimeout(() => { location.hash = '#/'; }, 800);
     } catch (err) {
-      toast('That file isn’t a Ghost Run backup.');
+      toast('Couldn’t read that file. Use a Ghost Run backup, GPX or CSV.');
     }
     e.target.value = '';
   };
