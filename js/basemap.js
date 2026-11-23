@@ -82,6 +82,26 @@ function loadLeafletGL() {
   return leafletGL;
 }
 
+// Map credits as a small (i) in the corner that opens on tap, instead of a strip across the map.
+export function creditsButton(map) {
+  const C = L.Control.extend({
+    options: { position: 'bottomright' },
+    onAdd: () => {
+      const el = L.DomUtil.create('div', 'map-credits');
+      el.innerHTML = '<button type="button" aria-label="Map credits">i</button><span hidden></span>';
+      const txt = el.querySelector('span');
+      el.querySelector('button').onclick = e => {
+        e.stopPropagation();
+        txt.innerHTML = map.getContainer().dataset.attr === 'vector' ? VECTOR_ATTR : OSM_ATTR;
+        txt.hidden = !txt.hidden;
+      };
+      L.DomEvent.disableClickPropagation(el);
+      return el;
+    },
+  });
+  new C().addTo(map);
+}
+
 // Give a Leaflet map (drive, race, route and plan maps) its base map.
 export function addBasemap(map) {
   let dead = false;
@@ -94,6 +114,6 @@ export function addBasemap(map) {
     if (dead || !map._mapPane) return; // the map was closed meanwhile
     if (!style) { raster(); return; }
     L.maplibreGL({ style: styleNow(theme) }).addTo(map);
-    if (map.attributionControl) map.attributionControl.addAttribution(VECTOR_ATTR);
+    map.getContainer().dataset.attr = 'vector';
   }).catch(() => raster());
 }

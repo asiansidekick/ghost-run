@@ -12,10 +12,10 @@ import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
-import { addBasemap, loadStyle } from './basemap.js';
+import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 1:15 AM';
+export const APP_VERSION = '24 Nov 2026, 1:45 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -42,9 +42,11 @@ function toast(msg, ms = 2600) {
 }
 
 function newMap(el, opts = {}) {
-  const map = L.map(el, { zoomControl: false, attributionControl: true, ...opts }).setView(BANGKOK, 12);
+  const map = L.map(el, { zoomControl: false, attributionControl: false, ...opts }).setView(BANGKOK, 12);
   addBasemap(map);
-  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  creditsButton(map);
+  // phones pinch to zoom, so the +/− buttons only cover the map there
+  if (!matchMedia('(pointer: coarse)').matches) L.control.zoom({ position: 'bottomright' }).addTo(map);
   return map;
 }
 
@@ -823,7 +825,6 @@ function renderRace(group, fromHash) {
     </div>
     <div class="race-wrap">
       <div class="map race-map" id="map"></div>
-      <div class="race-hud" id="hud"></div>
       <div class="race-clock" id="clock">0:00</div>
       <button class="btn small ghost race-fit" id="fitAll" hidden>Show everyone</button>
     </div>
@@ -832,6 +833,7 @@ function renderRace(group, fromHash) {
       <input type="range" id="scrub" min="0" max="${maxMs}" value="0" step="250" aria-label="Race position">
       <button class="btn small ghost" id="speed">20×</button>
     </div>
+    <div class="race-hud" id="hud"></div>
     <p class="muted small">${group.sameRoute === false
       ? 'These drives cover different roads, so each one plays from its own start, all at the same time.'
       : `Everyone starts together at the start of the shared stretch (${fmtKm(group.stretchM)}). Drives were made at different times, so traffic and lights differ.`}</p>
@@ -877,8 +879,7 @@ function renderRace(group, fromHash) {
     if (!force && !outside && now - lastFit < 3000) return;
     if (!force && now - lastFit < 700) return;
     lastFit = now;
-    const hudH = $('#hud').offsetHeight || 0;
-    map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [30, hudH + 30], paddingBottomRight: [50, 40], maxZoom: 17, animate: true, duration: 0.8 });
+    map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 50], paddingBottomRight: [40, 40], maxZoom: 17, animate: true, duration: 0.8 });
   }
   const draw = () => {
     $('#clock').textContent = fmtClock(t);
