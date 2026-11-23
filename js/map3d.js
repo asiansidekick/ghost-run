@@ -27,7 +27,7 @@ export class Map3D {
     // a pinch sets how close the chase camera sits from then on
     this.cam = 'heli';
     this.map.on('zoomend', e => { if (e.originalEvent) this.manualZoom = this.map.getZoom(); });
-    this.ready = new Promise(res => this.map.on('load', () => {
+    this.ready = new Promise(res => this.map.once('style.load', () => {
       if (this.vector) add3dBuildings(this.map, theme, 0.9);
       this.before = this.vector ? labelLayerId(this.map) : undefined;
       res();

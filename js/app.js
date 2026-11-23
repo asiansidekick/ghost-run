@@ -14,9 +14,10 @@ import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D } from './map3d.js';
+import { plan3D, flatPlanMap } from './planmap.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 3:30 AM';
+export const APP_VERSION = '24 Nov 2026, 4:00 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -1108,7 +1109,7 @@ function renderRoute(r) {
 
 // ---------- plan a route ----------
 // Search for places or tap the map to add stops; the last stop is where you're going.
-function planView(saved = null) {
+async function planView(saved = null) {
   const P = saved ? saved.plan : {};
   const st = {
     fromMe: saved ? !!P.fromMe : true, start: P.start || null,
@@ -1118,7 +1119,7 @@ function planView(saved = null) {
     <h1>${saved ? 'Edit route' : 'Plan a route'}</h1>
     <form class="search-row" id="sf"><input type="search" id="sq" placeholder="Search for a place" enterkeyhint="search" autocomplete="off"><button class="btn" type="submit">Search</button></form>
     <ul class="results" id="sr" hidden></ul>
-    <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div></div>
+    <div class="plan-map-wrap"><div class="map plan-map" id="pmap"></div><div class="map-chip" id="pchip"></div><button class="btn small ghost view3d-btn plan-tilt" id="ptilt" hidden>2D</button></div>
     <p class="muted small" id="phint">Quick tap on the map to drop a stop (don't hold). Drag a pin to move it. The last stop 🏁 is where you're going.</p>
     <label class="check-row"><input type="checkbox" id="fromMe" ${st.fromMe ? 'checked' : ''}> Start from where I am</label>
     <ol class="stops" id="stops"></ol>
@@ -1129,24 +1130,35 @@ function planView(saved = null) {
       <button class="btn ghost" id="psave" disabled>${saved ? 'Save changes' : 'Save to my routes'}</button>
       <button class="btn ghost" id="pshare" disabled>Share route</button>
     </section>`;
-  const map = newMap($('#pmap'));
-  const pinIcon = (txt, cls = '') => L.divIcon({ className: 'dot-wrap', html: `<div class="stop-pin ${cls}">${txt}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] });
-  let markers = [], meMarker = null, line = null, timer = null, reqNo = 0;
+  // a tilted 3D map where the phone can, otherwise the flat one
+  const el = $('#pmap');
+  let map = null;
+  if (webglOk() && store.settings().planView !== '2d') {
+    $('#pchip').textContent = 'Loading the map…';
+    $('#sf').onsubmit = e => e.preventDefault(); // replaced once the map is ready
+    try { map = await plan3D(el); } catch (e) { console.warn('3D planner map unavailable', e); el.innerHTML = ''; }
+    if (!document.body.contains(el)) { map?.remove(); return; }
+  }
+  if (!map) map = flatPlanMap(el, newMap);
+  if (map.is3D) {
+    let tilted = true;
+    const tb = $('#ptilt');
+    tb.hidden = false;
+    tb.onclick = () => { tilted = !tilted; map.tilt(tilted); tb.textContent = tilted ? '2D' : '3D'; };
+  }
+  const pinHTML = (txt, cls = '') => `<div class="stop-pin ${cls}">${txt}</div>`;
+  let markers = [], timer = null, reqNo = 0;
   const origin = () => st.fromMe ? (st.me ? { ...st.me, name: 'Your location' } : null) : st.start;
   const routeName = () => $('#pname').value.trim() || (st.stops.length ? `To ${st.stops[st.stops.length - 1].name}` : 'Planned route');
 
   function draw() {
     markers.forEach(m => m.remove()); markers = [];
     if (!st.fromMe && st.start) {
-      const m = L.marker([st.start.la, st.start.lo], { icon: pinIcon('S', 'start'), draggable: true }).addTo(map);
-      m.on('dragend', () => { const ll = m.getLatLng(); st.start = { la: ll.lat, lo: ll.lng, name: 'Pinned start' }; changed(); });
-      markers.push(m);
+      markers.push(map.addPin([st.start.la, st.start.lo], pinHTML('S', 'start'), ([la, lo]) => { st.start = { la, lo, name: 'Pinned start' }; changed(); }));
     }
     st.stops.forEach((x, k) => {
       const last = k === st.stops.length - 1;
-      const m = L.marker([x.la, x.lo], { icon: pinIcon(last ? '🏁' : k + 1, last ? 'dest' : ''), draggable: true }).addTo(map);
-      m.on('dragend', () => { const ll = m.getLatLng(); st.stops[k] = { la: ll.lat, lo: ll.lng, name: x.name.startsWith('Pin') ? x.name : 'Pin near ' + x.name }; changed(); });
-      markers.push(m);
+      markers.push(map.addPin([x.la, x.lo], pinHTML(last ? '🏁' : k + 1, last ? 'dest' : ''), ([la, lo]) => { st.stops[k] = { la, lo, name: x.name.startsWith('Pin') ? x.name : 'Pin near ' + x.name }; changed(); }));
     });
     const o = origin();
     $('#pchip').textContent = !st.fromMe && !st.start ? '👆 Tap the map to set your start'
@@ -1163,11 +1175,9 @@ function planView(saved = null) {
 
   function setResult(r) {
     st.result = r;
-    if (line) { line.remove(); line = null; }
     ['#pgo', '#psave', '#pshare'].forEach(id => { $(id).disabled = !r; });
+    map.setRoute(r ? r.points.map(p => [p.la, p.lo]) : null);
     if (!r) return;
-    const ll = r.points.map(p => [p.la, p.lo]);
-    line = L.layerGroup([L.polyline(ll, { color: '#000', weight: 10, opacity: 0.8 }), L.polyline(ll, { color: '#facc15', weight: 6 })]).addTo(map);
     $('#psum').innerHTML = `<b>${fmtKm(r.distance)}</b> · about <b>${fmtMin(r.duration)}</b>${st.stops.length > 1 ? ` · ${st.stops.length - 1} stop${st.stops.length > 2 ? 's' : ''} on the way` : ''}`;
   }
 
@@ -1187,7 +1197,7 @@ function planView(saved = null) {
         const r = await routeThrough([o, ...st.stops]);
         if (n !== reqNo) return;
         setResult(r);
-        if (fit) map.fitBounds(L.latLngBounds(r.points.map(p => [p.la, p.lo])), { padding: [30, 30] });
+        if (fit) map.fit(r.points.map(p => [p.la, p.lo]));
       } catch (e) {
         if (n !== reqNo) return;
         setResult(null);
@@ -1196,8 +1206,8 @@ function planView(saved = null) {
     }, 350);
   }
 
-  map.on('click', e => {
-    const p = { la: e.latlng.lat, lo: e.latlng.lng };
+  map.onClick(([la, lo]) => {
+    const p = { la, lo };
     if (!st.fromMe && !st.start) st.start = { ...p, name: 'Pinned start' };
     else st.stops.push({ ...p, name: `Pin ${st.stops.length + 1}` });
     changed();
@@ -1211,14 +1221,13 @@ function planView(saved = null) {
     const box = $('#sr');
     box.hidden = false; box.innerHTML = '<li class="muted">Searching…</li>';
     try {
-      const c = map.getCenter();
-      const list = await searchPlaces(q, st.me ? [st.me.la, st.me.lo] : [c.lat, c.lng]);
+      const list = await searchPlaces(q, st.me ? [st.me.la, st.me.lo] : map.center());
       box.innerHTML = list.length ? list.map((r, k) => `<li><button class="result" data-k="${k}"><b>${esc(r.name)}</b><small>${esc(r.detail)}</small></button></li>`).join('') : '<li class="muted">Nothing found. Try another name, or tap the map.</li>';
       box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
         const r = list[+b.dataset.k];
         st.stops.push({ la: r.la, lo: r.lo, name: r.name });
         box.hidden = true; $('#sq').value = '';
-        map.setView([r.la, r.lo], Math.max(map.getZoom(), 14));
+        map.setView([r.la, r.lo], Math.max(map.zoom(), 14));
         changed(true);
       });
     } catch (err) {
@@ -1249,7 +1258,8 @@ function planView(saved = null) {
   // where you are now, as the start
   if (navigator.geolocation) navigator.geolocation.getCurrentPosition(pos => {
     st.me = { la: pos.coords.latitude, lo: pos.coords.longitude };
-    meMarker = L.circleMarker([st.me.la, st.me.lo], { radius: 8, color: '#fff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1, interactive: false }).addTo(map);
+    if (!document.body.contains(el)) return;
+    map.setMe([st.me.la, st.me.lo]);
     if (!st.stops.length) map.setView([st.me.la, st.me.lo], 14);
     changed(!saved);
   }, () => {
@@ -1262,11 +1272,11 @@ function planView(saved = null) {
   }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
   if (saved) {
     const all = [...(st.start ? [st.start] : []), ...st.stops].map(x => [x.la, x.lo]);
-    if (saved.points && saved.points.length) map.fitBounds(L.latLngBounds(saved.points.map(p => [p.la, p.lo])), { padding: [30, 30] });
-    else if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+    if (saved.points && saved.points.length) map.fit(saved.points.map(p => [p.la, p.lo]));
+    else if (all.length) map.fit(all);
   }
   changed(!saved);
-  cleanup = () => { clearTimeout(timer); dropMap(map); };
+  cleanup = () => { clearTimeout(timer); map.remove(); };
 }
 
 // ---------- settings ----------

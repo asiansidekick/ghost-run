@@ -329,3 +329,5 @@ h2 { font-size: 1.1rem; }
 .cam-chase .dot3d .live-dot { transform: scale(1.5); }
 .cam-chase .dot3d .live-dot i { background: #fff; filter: drop-shadow(0 0 2px var(--c)) drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
 .cam-chase .dot3d .live-dot .spd { transform: translate(1px, 0) scale(0.67); transform-origin: left bottom; }
+.plan-tilt { top: auto; bottom: 30px; }
+.me-dot { width: 18px; height: 18px; border-radius: 50%; background: #3b82f6; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(59,130,246,.25); }

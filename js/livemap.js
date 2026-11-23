@@ -39,7 +39,7 @@ export class LiveMap {
       container: el, style, center: center ? [center[1], center[0]] : [100.5018, 13.7563],
       zoom: 16, pitch: 0, attributionControl: { compact: true }, dragRotate: true, pitchWithRotate: true,
     });
-    this.loaded = new Promise(res => this.map.on('load', () => {
+    this.loaded = new Promise(res => this.map.once('style.load', () => {
       const m = this.map;
       if (this.vector) add3dBuildings(m, this.theme, 0.55);
       const before = this.vector ? labelLayerId(m) : undefined;
