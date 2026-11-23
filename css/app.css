@@ -317,3 +317,9 @@ h2 { font-size: 1.1rem; }
 .map-credits button { width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(15, 17, 21, 0.55); color: rgba(255, 255, 255, 0.85); font: italic 700 12px/20px Georgia, serif; padding: 0; cursor: pointer; }
 .map-credits span { font-size: 10px; line-height: 1.3; max-width: 230px; padding: 3px 6px; border-radius: 8px; background: rgba(15, 17, 21, 0.85); color: rgba(255, 255, 255, 0.8); }
 .map-credits a { color: #93c5fd; }
+/* 3D replay view */
+.map-box .map3d, .race-wrap .map3d { position: absolute; inset: 0; height: auto; min-height: 0; z-index: 2; }
+.view3d-btn { position: absolute; top: 8px; right: 8px; z-index: 700; min-width: 44px; font-weight: 800; background: rgba(15, 17, 21, 0.7); }
+.race-3d { top: auto; bottom: 8px; left: 8px; right: auto; }
+.pin3d { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.dot3d { width: 26px; height: 26px; }

@@ -13,9 +13,10 @@ import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
 import { searchPlaces, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
+import { open3D } from './map3d.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 1:45 AM';
+export const APP_VERSION = '24 Nov 2026, 2:30 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -543,7 +544,7 @@ function renderDrive(drive, { own, save }) {
       ${own ? `<input class="title-input" id="name" value="${esc(drive.name)}" placeholder="${esc(driveTitle({ ...drive, name: '' }))}" aria-label="Drive name">` : `<h1>${esc(driveTitle(drive))}</h1>`}
     </div>
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map-box"><div class="map" id="map"></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div></div>
+    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><div class="gbar-overlay" id="gbar">${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d">3D</button>' : ''}</div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
@@ -597,13 +598,16 @@ function renderDrive(drive, { own, save }) {
   const map = newMap($('#map'));
   const blue = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
   const red = getComputedStyle(document.documentElement).getPropertyValue('--red').trim();
+  // everything drawn is also kept in lines/pins so the 3D view can draw the same
+  const lines = [], pins = [];
+  const seg = (coords, o) => { lines.push({ coords, ...o, dash: !!o.dashArray }); L.polyline(coords, o).addTo(map); };
   let run = [A.pts[0]], runOver = A.pts[0].over;
-  const flush = () => { if (run.length > 1) L.polyline(run.map(p => [p.la, p.lo]), { color: runOver ? red : blue, weight: runOver ? 6 : 5, opacity: 0.95 }).addTo(map); };
+  const flush = () => { if (run.length > 1) seg(run.map(p => [p.la, p.lo]), { color: runOver ? red : blue, weight: runOver ? 6 : 5, opacity: 0.95 }); };
   for (let i = 1; i < A.pts.length; i++) {
     const p = A.pts[i];
     if (p.gapBefore) {
       flush();
-      L.polyline([[A.pts[i - 1].la, A.pts[i - 1].lo], [p.la, p.lo]], { color: '#888', weight: 3, dashArray: '6 8' }).addTo(map);
+      seg([[A.pts[i - 1].la, A.pts[i - 1].lo], [p.la, p.lo]], { color: '#888', weight: 3, dashArray: '6 8' });
       run = [p]; runOver = p.over; continue;
     }
     if (p.over !== runOver) { run.push(p); flush(); run = [p]; runOver = p.over; }
@@ -612,17 +616,43 @@ function renderDrive(drive, { own, save }) {
   flush();
   for (const e of A.events) {
     const p = A.pts[e.i];
+    pins.push({ ll: [p.la, p.lo], fill: '#f59e0b', title: e.type === 'brake' ? 'Hard braking' : 'Hard acceleration' });
     L.circleMarker([p.la, p.lo], { radius: 6, color: '#fff', weight: 2, fillColor: '#f59e0b', fillOpacity: 1 })
       .bindPopup(`${e.type === 'brake' ? 'Hard braking' : 'Hard acceleration'}, ${Math.abs(e.g).toFixed(2)} g<br>${fmtTime(p.t)}`).addTo(map);
   }
   const first = A.pts[0], last = A.pts[A.pts.length - 1];
+  pins.push({ ll: [first.la, first.lo], fill: '#22c55e', title: 'Start' }, { ll: [last.la, last.lo], fill: '#111', title: 'Finish' });
   L.circleMarker([first.la, first.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
   L.circleMarker([last.la, last.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
   map.fitBounds(L.latLngBounds(A.pts.map(p => [p.la, p.lo])), { padding: [24, 24] });
   const trail = L.polyline([], { color: '#fff', weight: 3, opacity: 0.85 }).addTo(map);
   const marker = L.marker([first.la, first.lo], { icon: dotIcon(blue), zIndexOffset: 1000, interactive: false }).addTo(map);
-  const dotEl = () => marker.getElement();
-  const setSpd = v => { const el = dotEl()?.querySelector('.spd'); if (el) el.textContent = Math.round(v); };
+  // the 3D view (when on) mirrors the dot and trail
+  let m3 = null, m3dot = null, m3trail = null;
+  const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
+  const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = Math.round(v); });
+  const prevOf = i => { const q = A.pts[Math.max(0, i - 4)]; return [q.la, q.lo]; };
+  async function set3D(on) {
+    store.saveSettings({ ...store.settings(), replay3d: on });
+    if (!$('#v3d')) return;
+    $('#v3d').textContent = on ? '2D' : '3D';
+    if (!on) { if (m3) { m3.remove(); m3 = m3dot = m3trail = null; } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
+    if (m3) return;
+    $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
+    try { m3 = await open3D($('#map3d')); }
+    catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); return set3D(false); }
+    if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
+    m3.addLines(lines);
+    pins.forEach(p => m3.pin(p.ll, p.fill, p.title));
+    m3trail = m3.liveLine('#fff', 3, 0.85);
+    m3dot = m3.dot(`<div class="live-dot${playing ? ' moving' : ''}" style="--c:${blue}"><i></i><span class="spd">0</span></div>`, [A.pts[idx].la, A.pts[idx].lo]);
+    m3.map.on('dragstart', () => { if (m3) m3.manual = true; });
+    const p = A.pts[idx];
+    m3dot.setLatLng([p.la, p.lo]); m3trail.setLatLngs(A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]));
+    setSpd(p.v);
+    m3.follow([p.la, p.lo], idx ? prevOf(idx) : [A.pts[Math.min(4, A.pts.length - 1)].la, A.pts[Math.min(4, A.pts.length - 1)].lo].map((x, k) => 2 * [p.la, p.lo][k] - x));
+  }
+  if ($('#v3d')) $('#v3d').onclick = () => set3D(!m3);
 
   // replay + charts
   const cs = $('#cs'), cg = $('#cg'), scrub = $('#scrub'), readout = $('#readout');
@@ -633,8 +663,12 @@ function renderDrive(drive, { own, save }) {
     if (!playing) {
       marker.setLatLng([p.la, p.lo]);
       trail.setLatLngs(idx ? A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]) : []);
+      if (m3) {
+        m3dot.setLatLng([p.la, p.lo]); m3trail.setLatLngs(A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]));
+        if (pan) { m3.manual = false; m3.follow([p.la, p.lo], prevOf(idx), { duration: 300 }); }
+      }
     }
-    dotEl()?.classList.toggle('over', !!p.over);
+    dotEls().forEach(d => d.classList.toggle('over', !!p.over));
     if (!playing) { setSpd(p.v); gSoft = p.a; setGBar($('#gbar'), p.a); }
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
@@ -647,13 +681,14 @@ function renderDrive(drive, { own, save }) {
   // replay (20× real time to start); the dot glides between GPS fixes and leaves a trail
   let playing = false, raf = null, rate = 20, gSoft = null;
   $('#rspeed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
-  const stopPlay = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; dotEl()?.classList.remove('moving'); };
+  const stopPlay = () => { playing = false; cancelAnimationFrame(raf); $('#play').textContent = '▶'; dotEls().forEach(d => d.classList.remove('moving')); };
   $('#play').onclick = () => {
     if (playing) return stopPlay();
     if (idx >= A.pts.length - 1) setIdx(0);
     playing = true;
     $('#play').textContent = '❚❚';
-    dotEl()?.classList.add('moving');
+    dotEls().forEach(d => d.classList.add('moving'));
+    if (m3) m3.manual = false;
     let simT = A.pts[idx].t, lastFrame = performance.now();
     const trailPts = A.pts.slice(0, idx + 1).map(q => [q.la, q.lo]);
     const frameFn = now => {
@@ -665,6 +700,11 @@ function renderDrive(drive, { own, save }) {
       const f = b.t > a.t && !b.gapBefore ? Math.min(1, (simT - a.t) / (b.t - a.t)) : 0;
       const ll = [a.la + f * (b.la - a.la), a.lo + f * (b.lo - a.lo)];
       marker.setLatLng(ll);
+      if (m3) {
+        m3dot.setLatLng(ll);
+        m3trail.setLatLngs([...trailPts, ll]);
+        if (!m3.manual) m3.follow(ll, prevOf(j));
+      }
       setSpd(a.v + f * (b.v - a.v));
       gSoft = ease(gSoft, a.a + f * (b.a - a.a));
       setGBar($('#gbar'), gSoft);
@@ -717,7 +757,8 @@ function renderDrive(drive, { own, save }) {
       location.hash = '#/';
     };
   }
-  cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); };
+  if (store.settings().replay3d && webglOk()) set3D(true);
+  cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 
   // other drives on the same route: yours, and friends' drives you've saved
   store.allDrives().then(all => {
@@ -825,7 +866,9 @@ function renderRace(group, fromHash) {
     </div>
     <div class="race-wrap">
       <div class="map race-map" id="map"></div>
+      <div class="map race-map map3d" id="map3d" hidden></div>
       <div class="race-clock" id="clock">0:00</div>
+      ${webglOk() ? '<button class="btn small ghost view3d-btn race-3d" id="v3d">3D</button>' : ''}
       <button class="btn small ghost race-fit" id="fitAll" hidden>Show everyone</button>
     </div>
     <div class="replay">
@@ -843,57 +886,94 @@ function renderRace(group, fromHash) {
   $('#back').onclick = () => { if (fromHash) history.back(); else route(); };
   const map = newMap($('#map'));
   const refE = entries.find(e => e.isRef) || entries[0];
+  const lines = [];
   if (group.sameRoute === false) {
     const all = [];
     for (const e of entries) {
       const ll = e.A.pts.map(p => [p.la, p.lo]);
       all.push(...ll);
+      lines.push({ coords: ll, color: e.color, weight: 6, opacity: 0.3 });
       L.polyline(ll, { color: e.color, weight: 6, opacity: 0.3 }).addTo(map);
     }
     map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
   } else {
     const stretch = refE.A.pts.slice(refE.i0, refE.i1 + 1).map(p => [p.la, p.lo]);
+    lines.push({ coords: stretch, color: '#94a3b8', weight: 8, opacity: 0.35 });
     L.polyline(stretch, { color: '#94a3b8', weight: 8, opacity: 0.35 }).addTo(map);
     map.fitBounds(L.latLngBounds(stretch), { padding: [30, 30] });
   }
   const dots = entries.map((e, k) => {
     const trail = L.polyline([], { color: e.color, weight: 4, opacity: 0.9 }).addTo(map);
-    const m = L.marker([e.A.pts[e.i0].la, e.A.pts[e.i0].lo], { icon: L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot race${k % 2 ? " alt" : ""}" style="--c:${e.color}"><i></i><b>${k + 1}</b><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000 - k, interactive: false }).addTo(map);
-    return { e, trail, m };
+    const html = `<div class="live-dot race${k % 2 ? " alt" : ""}" style="--c:${e.color}"><i></i><b>${k + 1}</b><span class="spd">0</span></div>`;
+    const m = L.marker([e.A.pts[e.i0].la, e.A.pts[e.i0].lo], { icon: L.divIcon({ className: 'dot-wrap', html, iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000 - k, interactive: false }).addTo(map);
+    return { e, trail, m, html };
   });
   const firstNames = entries.map(e => e.label.split(',')[0]);
   const dupNames = new Set(firstNames).size < firstNames.length;
   let t = 0, playing = false, raf = null, rate = 20;
   // keep everyone in view while it plays; a finger on the map turns that off until "Show everyone"
   let autoFit = true, lastFit = 0;
-  map.on('dragstart', () => { autoFit = false; $('#fitAll').hidden = false; });
+  const userMoved = () => { autoFit = false; $('#fitAll').hidden = false; };
+  map.on('dragstart', userMoved);
+  // 3D view: same lines and dots on a tilted map with buildings
+  let m3 = null;
+  async function set3D(on) {
+    store.saveSettings({ ...store.settings(), replay3d: on });
+    if (!$('#v3d')) return;
+    $('#v3d').textContent = on ? '2D' : '3D';
+    if (!on) { if (m3) { m3.remove(); m3 = null; dots.forEach(d => { d.m3 = d.t3 = null; }); } $('#map3d').hidden = true; $('#map').style.visibility = ''; return; }
+    if (m3) return;
+    $('#map3d').hidden = false; $('#map').style.visibility = 'hidden';
+    try { m3 = await open3D($('#map3d')); }
+    catch (e) { console.warn(e); toast('The 3D view isn’t available on this phone.'); return set3D(false); }
+    if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
+    m3.addLines(lines);
+    dots.forEach(d => { d.t3 = m3.liveLine(d.e.color, 4, 0.9); d.m3 = m3.dot(d.html, [d.e.A.pts[d.e.i0].la, d.e.A.pts[d.e.i0].lo]); });
+    m3.map.on('dragstart', e => { if (e.originalEvent) userMoved(); });
+    m3.fit(lines.flatMap(l => l.coords), { padding: 40 });
+    lastFit = 0;
+    draw();
+    if (autoFit) fitAll(true);
+  }
+  if ($('#v3d')) $('#v3d').onclick = () => set3D(!m3);
   $('#fitAll').onclick = () => { autoFit = true; lastFit = 0; $('#fitAll').hidden = true; fitAll(true); };
   function fitAll(force) {
     const live = dots.map(({ e }) => positionAt(e, t)).filter(p => !p.done);
     const pts = (live.length ? live : dots.map(({ e }) => positionAt(e, t))).map(p => [p.la, p.lo]);
     if (!pts.length) return;
+    if (m3) {
+      // also frame where they'll be in a moment, so the camera leads rather than lags
+      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
+      if (force) m3.fit(pts, { padding: 60, duration: 600 }); else m3.track([...pts, ...ahead], 60);
+      return;
+    }
     const now = performance.now();
-    const inner = map.getBounds().pad(-0.2);
-    const outside = pts.some(p => !inner.contains(p));
+    const outside = m3 ? pts.some(p => !m3.inView(p, 0.18)) : (() => { const inner = map.getBounds().pad(-0.2); return pts.some(p => !inner.contains(p)); })();
     // re-frame when someone nears the edge, or every few seconds so it zooms back in as they bunch up
     if (!force && !outside && now - lastFit < 3000) return;
     if (!force && now - lastFit < 700) return;
     lastFit = now;
-    map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 50], paddingBottomRight: [40, 40], maxZoom: 17, animate: true, duration: 0.8 });
+    if (m3) m3.fit(pts, { padding: { top: 70, bottom: 50, left: 50, right: 50 }, duration: 800 });
+    else map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 50], paddingBottomRight: [40, 40], maxZoom: 17, animate: true, duration: 0.8 });
   }
   const draw = () => {
     $('#clock').textContent = fmtClock(t);
     $('#scrub').value = t;
-    const rows = dots.map(({ e, trail, m }) => {
+    const rows = dots.map(d => {
+      const { e, trail, m } = d;
       const p = positionAt(e, t);
       m.setLatLng([p.la, p.lo]);
-      const el = m.getElement();
-      el?.classList.toggle('over', !!p.over && !p.done);
-      el?.classList.toggle('done', p.done);
-      const sp = el?.querySelector('.spd');
-      if (sp) sp.textContent = p.done ? '🏁' : Math.round(p.v);
+      if (d.m3) d.m3.setLatLng([p.la, p.lo]);
+      for (const el of [m.getElement(), d.m3?.getElement()].map(x => x?.querySelector('.live-dot')).filter(Boolean)) {
+        el.classList.toggle('over', !!p.over && !p.done);
+        el.classList.toggle('done', p.done);
+        const sp = el.querySelector('.spd');
+        if (sp) sp.textContent = p.done ? '🏁' : Math.round(p.v);
+      }
       const P = e.A.pts, end = Math.min(e.i1, e.i0 + Math.max(0, upperIdx(P, e.i0, e.i1, P[e.i0].t + t)));
-      trail.setLatLngs([...P.slice(e.i0, end + 1).map(q => [q.la, q.lo]), [p.la, p.lo]]);
+      const tr = [...P.slice(e.i0, end + 1).map(q => [q.la, q.lo]), [p.la, p.lo]];
+      trail.setLatLngs(tr);
+      if (d.t3) d.t3.setLatLngs(tr);
       e.gSoft = playing ? ease(e.gSoft, p.g) : p.g;
       return { e, p };
     });
@@ -927,7 +1007,8 @@ function renderRace(group, fromHash) {
   $('#scrub').oninput = e => { stop(); t = +e.target.value; draw(); };
   $('#speed').onclick = e => { rate = nextRate(rate); e.target.textContent = rate + '×'; };
   draw();
-  cleanup = () => { stop(); dropMap(map); };
+  if (store.settings().replay3d && webglOk()) set3D(true);
+  cleanup = () => { stop(); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 }
 
 const RATES = [1, 5, 10, 20, 60];

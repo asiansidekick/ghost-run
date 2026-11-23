@@ -114,7 +114,7 @@ export class LiveMap {
     const center = [ll[1], ll[0]];
     if (this.mode === 'pov') {
       const h = this.el.clientHeight;
-      this.map.easeTo({ center, bearing: this.heading, pitch: 58, zoom: 17, offset: [0, h * 0.2], duration: 900, easing: t => t });
+      this.map.easeTo({ center, bearing: this.heading, pitch: 60, zoom: 17.6, offset: [0, h * 0.2], duration: 900, easing: t => t });
     } else if (ahead) {
       const b = new maplibregl.LngLatBounds(center, center).extend([ahead[1], ahead[0]]);
       this.map.fitBounds(b, { padding: { top: 140, bottom: 90, left: 50, right: 90 }, maxZoom: 17, bearing: 0, pitch: 0, duration: 700 });
