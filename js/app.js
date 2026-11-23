@@ -1,6 +1,6 @@
 import * as store from './store.js';
 import { Recorder, finishDrive } from './recorder.js';
-import { analyse } from './analysis.js';
+import { analyse, bearing } from './analysis.js';
 import { computeLimits, defaultLimits, TH_DEFAULTS } from './limits.js';
 import { speedChart, gChart, xToIndex } from './charts.js';
 import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './share.js';
@@ -16,7 +16,7 @@ import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D } from './map3d.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 3:15 AM';
+export const APP_VERSION = '24 Nov 2026, 3:30 AM';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -893,7 +893,7 @@ function renderRace(group, fromHash) {
       <li><span class="cmp-pos" style="background:${e.color}">${k + 1}</span><span class="cmp-name">${esc(e.label)}</span>
       <span class="cmp-time">${fmtClock(e.ms)}</span><span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span></li>`).join('')}</ol></section>`;
   $('#back').onclick = () => { if (fromHash) history.back(); else route(); };
-  const map = newMap($('#map'));
+  const map = newMap($('#map'), { zoomSnap: 0 });
   const refE = entries.find(e => e.isRef) || entries[0];
   const lines = [];
   if (group.sameRoute === false) {
@@ -938,7 +938,12 @@ function renderRace(group, fromHash) {
     if (!document.body.contains($('#map3d'))) { m3.remove(); m3 = null; return; }
     m3.addLines(lines);
     dots.forEach(d => { d.t3 = m3.liveLine(d.e.color, 4, 0.9); d.m3 = m3.dot(d.html, [d.e.A.pts[d.e.i0].la, d.e.A.pts[d.e.i0].lo]); });
-    m3.map.on('dragstart', e => { if (e.originalEvent) userMoved(); });
+    // the camera moves every frame, which stops the map's own drag events, so watch the finger directly
+    { const c = m3.map.getCanvasContainer(); let x0 = null, y0 = 0;
+      c.addEventListener('pointerdown', e => { x0 = e.clientX; y0 = e.clientY; });
+      c.addEventListener('pointermove', e => { if (x0 != null && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) { x0 = null; userMoved(); } });
+      c.addEventListener('pointerup', () => { x0 = null; });
+      c.addEventListener('wheel', userMoved, { passive: true }); }
     m3.fit(lines.flatMap(l => l.coords), { padding: 40 });
     lastFit = 0;
     draw();
@@ -953,7 +958,24 @@ function renderRace(group, fromHash) {
     if (m3) {
       // also frame where they'll be in a moment, so the camera leads rather than lags
       const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
-      if (force) m3.fit(pts, { padding: 60, duration: 600 }); else m3.track([...pts, ...ahead], 60);
+      // face the way the leader is going
+      const lead = dots.map(({ e }) => ({ e, p: positionAt(e, t) })).filter(x => !x.p.done).sort((a, b) => b.p.prog - a.p.prog)[0];
+      let hd = null;
+      if (lead) { const q = positionAt(lead.e, Math.max(0, t - 4000)); if (q.la !== lead.p.la || q.lo !== lead.p.lo) hd = bearing(q.la, q.lo, lead.p.la, lead.p.lo); }
+      if (force) { m3.resetTrack(); m3.fit(pts, { padding: 60, duration: 600 }); } else m3.track([...pts, ...ahead], 60, hd);
+      return;
+    }
+    // flat map: the same gliding camera (fractional zoom), instead of jumps every few seconds
+    if (!force) {
+      const now2 = performance.now(), dt = Math.min(0.1, ((now2 - (lastFit || now2)) / 1000) || 0.016);
+      lastFit = now2;
+      const ease = tau => 1 - Math.exp(-dt / tau);
+      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
+      const bb = L.latLngBounds([...pts, ...ahead]);
+      const tz = Math.min(17, map.getBoundsZoom(bb, false, L.point(80, 100)));
+      const z = map.getZoom(), c = map.getCenter(), tc = bb.getCenter();
+      const kz = ease(tz < z ? 0.35 : 1.4), kc = ease(0.3);
+      map.setView([c.lat + (tc.lat - c.lat) * kc, c.lng + (tc.lng - c.lng) * kc], z + (tz - z) * kz, { animate: false });
       return;
     }
     const now = performance.now();

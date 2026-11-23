@@ -93,15 +93,26 @@ export class Map3D {
   }
 
   // keep several moving dots framed: glide the camera a little toward the framing each frame
-  track(lls, padding = 50) {
+  // Several moving dots: a camera that glides, eased by time (not by frame) so it's equally smooth
+  // at any frame rate. It pans quickly, zooms out quickly when someone nears the edge, zooms in
+  // slowly as the pack bunches up, and slowly turns to face the way the race is heading.
+  track(lls, padding = 50, heading = null) {
+    const now = performance.now(), dt = Math.min(0.1, ((now - (this.lastTrack || now)) / 1000) || 0.016);
+    this.lastTrack = now;
+    const ease = tau => 1 - Math.exp(-dt / tau);
+    const z = this.map.getZoom(), br = this.map.getBearing();
+    let nb = br;
+    if (heading != null) { const d = ((heading - br + 540) % 360) - 180; nb = br + d * ease(1.6); }
     const b = new maplibregl.LngLatBounds();
     lls.forEach(([la, lo]) => b.extend([lo, la]));
-    const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: this.map.getBearing() });
+    const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: nb });
     if (!cam) return;
-    const c = this.map.getCenter(), z = this.map.getZoom(), tc = maplibregl.LngLat.convert(cam.center);
-    const tz = Math.min(18, cam.zoom - 0.9), k = 0.25;
-    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * k, c.lat + (tc.lat - c.lat) * k], zoom: z + (tz - z) * k, pitch: 66 });
+    const c = this.map.getCenter(), tc = maplibregl.LngLat.convert(cam.center);
+    const tz = Math.min(18, cam.zoom - 0.9);
+    const kz = ease(tz < z ? 0.35 : 1.4), kc = ease(0.3);
+    this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * kc, c.lat + (tc.lat - c.lat) * kc], zoom: z + (tz - z) * kz, pitch: 66, bearing: nb });
   }
+  resetTrack() { this.lastTrack = null; }
 
   // chase camera: behind the car, facing where it's going (heading smoothed so it doesn't swing)
   follow([la, lo], from, { duration = 0, speed = null } = {}) {
