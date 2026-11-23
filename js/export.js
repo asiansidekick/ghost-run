@@ -2,7 +2,7 @@
 const esc = s => String(s ?? '').replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
 export function gpx(drive, A) {
-  const name = drive.name || 'Street Legal drive';
+  const name = drive.name || 'Ghost Run drive';
   const seg = [];
   let cur = [];
   A.pts.forEach((p, i) => {
@@ -12,7 +12,7 @@ export function gpx(drive, A) {
   });
   if (cur.length) seg.push(cur);
   return `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="Street Legal" xmlns="http://www.topografix.com/GPX/1/1">
+<gpx version="1.1" creator="Ghost Run" xmlns="http://www.topografix.com/GPX/1/1">
   <metadata><name>${esc(name)}</name><time>${new Date(A.summary.start).toISOString()}</time></metadata>
   <trk><name>${esc(name)}</name>
 ${seg.map(s => `    <trkseg>\n${s.join('\n')}\n    </trkseg>`).join('\n')}

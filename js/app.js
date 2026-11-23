@@ -94,7 +94,7 @@ async function homeView() {
         </div>
       </section>`).join('')}
     <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start a drive'}</a>
-    ${!standalone ? `<p class="hint">Tip: add Street Legal to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
+    ${!standalone ? `<p class="hint">Tip: add Ghost Run to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
     <h2 class="section-title">My drives</h2>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
@@ -377,7 +377,7 @@ function renderDrive(drive, { own, save }) {
   const me = store.settings().name;
   $('#shareDrive').onclick = async () => {
     const payload = await packDrive(drive, { trim: own && store.settings().trimShare, from: own ? me : drive.from });
-    const r = await shareLink(shareUrl('s', payload), driveTitle(drive), `${driveTitle(drive)}: ${fmtKm(S.distance)} on Street Legal`);
+    const r = await shareLink(shareUrl('s', payload), driveTitle(drive), `${driveTitle(drive)}: ${fmtKm(S.distance)} on Ghost Run`);
     if (r === 'copied') toast('Link copied. Paste it to a friend.');
   };
   $('#shareRoute').onclick = async () => {
@@ -606,7 +606,7 @@ function settingsView() {
     </section>
     <h2 class="section-title">Speed limits</h2>
     <section class="card">
-      <p class="small">Where a road has a posted limit in OpenStreetMap, that's used. Elsewhere Street Legal falls back to Thai defaults:</p>
+      <p class="small">Where a road has a posted limit in OpenStreetMap, that's used. Elsewhere Ghost Run falls back to Thai defaults:</p>
       <table class="tbl">${TH_DEFAULTS.map(d => `<tr><td>${esc(d.label)}</td><td>${d.kmh} km/h</td></tr>`).join('')}</table>
       <p class="muted small">A stretch shows red only when you were more than 2 km/h over for at least 2 seconds, to allow for GPS error. Treat it as a guide: the signs on the road are what count.</p>
     </section>

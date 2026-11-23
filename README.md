@@ -1,4 +1,6 @@
-# Street Legal
+# Ghost Run
+
+_Formerly "Street Legal". The storage names inside the code still say street-legal on purpose, so drives saved under the old name are kept._
 
 A mobile web app that logs your drives (route, speed, acceleration and braking) and lets you share them with friends by link. First build is set up for Bangkok.
 
