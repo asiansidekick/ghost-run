@@ -122,7 +122,7 @@ export class Map3D {
   // Several moving dots: a camera that glides, eased by time (not by frame) so it's equally smooth
   // at any frame rate. It pans quickly, zooms out quickly when someone nears the edge, zooms in
   // slowly as the pack bunches up, and slowly turns to face the way the race is heading.
-  track(lls, padding = 50, heading = null) {
+  track(lls, padding = 50, heading = null, must = null) {
     const now = performance.now(), dt = Math.min(0.1, ((now - (this.lastTrack || now)) / 1000) || 0.016);
     this.lastTrack = now;
     const ease = tau => 1 - Math.exp(-dt / tau);
@@ -134,10 +134,13 @@ export class Map3D {
     const cam = this.map.cameraForBounds(b, { padding, maxZoom: 18, bearing: nb });
     if (!cam) return;
     const c = this.map.getCenter(), tc = maplibregl.LngLat.convert(cam.center);
-    const tz = Math.min(19, cam.zoom - 0.9 + this.zoomBias);
-    // zoom in only for a real change, so it doesn't keep breathing in and out
-    const goal = tz < z || tz - z > 0.35 ? tz : z;
-    const kz = ease(goal < z ? 0.8 : 3), kc = ease(0.6);
+    let tz = Math.min(18.5, cam.zoom - 0.5 + this.zoomBias);
+    // whoever is off screen (or about to be) wins: zoom out until they're back
+    const off = (must || lls).some(p => !this.inView(p, 0.06));
+    if (off) tz = Math.min(tz, z - 0.25);
+    // otherwise move toward the framing, zooming in readily but out only when it's really needed
+    const goal = off || tz - z > 0.15 || z - tz > 0.4 ? tz : z;
+    const kz = ease(goal < z ? (off ? 0.5 : 1.2) : 1.4), kc = ease(0.6);
     this.map.jumpTo({ center: [c.lng + (tc.lng - c.lng) * kc, c.lat + (tc.lat - c.lat) * kc], zoom: z + (goal - z) * kz, pitch: 66, bearing: nb });
   }
   resetTrack() { this.lastTrack = null; }
@@ -164,8 +167,10 @@ export class Map3D {
     }
     if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * ease(3);
     // pulls back a little as the speed rises, like a camera car keeping pace
-    const pull = Math.min(1, (this.speed || 0) / 110) * 0.9;
-    const opts = { center: [lo, la], zoom: Math.max(12, Math.min(20, (chase ? 18.4 - pull : 17.4) + this.zoomBias)), pitch: chase ? 78 : 60, bearing: this.heading ?? this.map.getBearing() };
+    const pull = Math.min(1, (this.speed || 0) / 120) * 0.4;
+    // buildings go see-through close in, so a tower between the camera and the car doesn't hide it
+    this.buildingOpacity(chase ? 0.4 : 0.75);
+    const opts = { center: [lo, la], zoom: Math.max(12, Math.min(20, (chase ? 18.4 - pull : 17.4) + this.zoomBias)), pitch: chase ? 70 : 60, bearing: this.heading ?? this.map.getBearing() };
     const el = this.map.getContainer();
     el.classList.toggle('cam-chase', chase);
     // the car sits low in the picture, with the road ahead filling the rest
@@ -173,6 +178,12 @@ export class Map3D {
     const swing = chase ? -(this.turn || 0) / 60 * el.clientWidth * 0.12 : 0;
     opts.offset = [swing, el.clientHeight * (chase ? 0.24 : 0.15)];
     this.map.easeTo({ ...opts, duration });
+  }
+
+  buildingOpacity(o) {
+    if (this.bop === o || !this.map.getLayer('building-3d')) return;
+    this.bop = o;
+    this.map.setPaintProperty('building-3d', 'fill-extrusion-opacity', o);
   }
 
   inView([la, lo], inset = 0.15) {

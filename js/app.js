@@ -19,7 +19,7 @@ import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 4:00 AM (v31)';
+export const APP_VERSION = '24 Nov 2026, 5:30 PM (v32)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -1050,12 +1050,13 @@ function renderRace(group, fromHash) {
     if (!pts.length) return;
     if (m3) {
       // also frame where they'll be in a moment, so the camera leads rather than lags
-      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
+      // (a couple of seconds of race time, not more: at fast replay speeds a long look-ahead zoomed the camera far out)
+      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + Math.min(rate * 700, 2500)))).filter(p => !p.done).map(p => [p.la, p.lo]);
       // face the way the leader is going
       const lead = dots.map(({ e }) => ({ e, p: positionAt(e, t) })).filter(x => !x.p.done).sort((a, b) => b.p.prog - a.p.prog)[0];
       let hd = null;
       if (lead) { const q = positionAt(lead.e, Math.max(0, t - 4000)); if (q.la !== lead.p.la || q.lo !== lead.p.lo) hd = bearing(q.la, q.lo, lead.p.la, lead.p.lo); }
-      if (force) { m3.resetTrack(); m3.fit(pts, { padding: 60, duration: 600 }); } else m3.track([...pts, ...ahead], 60, hd);
+      if (force) { m3.resetTrack(); m3.fit(pts, { padding: 60, duration: 600 }); } else m3.track([...pts, ...ahead], 60, hd, pts);
       return;
     }
     // flat map: the same gliding camera (fractional zoom), instead of jumps every few seconds
@@ -1063,10 +1064,13 @@ function renderRace(group, fromHash) {
       const now2 = performance.now(), dt = Math.min(0.1, ((now2 - (lastFit || now2)) / 1000) || 0.016);
       lastFit = now2;
       const ease = tau => 1 - Math.exp(-dt / tau);
-      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + rate * 700))).filter(p => !p.done).map(p => [p.la, p.lo]);
+      const ahead = dots.map(({ e }) => positionAt(e, Math.min(maxMs, t + Math.min(rate * 700, 2500)))).filter(p => !p.done).map(p => [p.la, p.lo]);
       const bb = L.latLngBounds([...pts, ...ahead]);
-      const tz = Math.min(19, map.getBoundsZoom(bb, false, L.point(80, 100)) + bias2d);
+      let tz = Math.min(19, map.getBoundsZoom(bb, false, L.point(80, 100)) + bias2d);
       const z = map.getZoom(), c = map.getCenter(), tc = bb.getCenter();
+      // everyone stays on screen, even when pinched in
+      const inner = map.getBounds().pad(-0.06);
+      if (pts.some(p => !inner.contains(p))) tz = Math.min(tz, z - 0.25);
       const kz = ease(tz < z ? 0.35 : 1.4), kc = ease(0.3);
       map.setView([c.lat + (tc.lat - c.lat) * kc, c.lng + (tc.lng - c.lng) * kc], z + (tz - z) * kz, { animate: false });
       return;
