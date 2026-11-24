@@ -42,6 +42,7 @@ export class Map3D {
       attributionControl: { compact: true }, maxPitch: 85,
     });
     this.lines = 0;
+    el.__map3d = this;
     this.cam = 'heli';
     this.zoomBias = 0; // set by pinching: how much closer (+) or further (−) than the camera's own choice
     if (autoCam) {
@@ -168,9 +169,14 @@ export class Map3D {
     if (speed != null) this.speed = this.speed == null ? speed : this.speed + (speed - this.speed) * ease(3);
     // pulls back a little as the speed rises, like a camera car keeping pace
     const pull = Math.min(1, (this.speed || 0) / 120) * 0.4;
-    // buildings go see-through close in, so a tower between the camera and the car doesn't hide it
-    this.buildingOpacity(chase ? 0.4 : 0.75);
-    const opts = { center: [lo, la], zoom: Math.max(12, Math.min(20, (chase ? 18.4 - pull : 17.4) + this.zoomBias)), pitch: chase ? 70 : 60, bearing: this.heading ?? this.map.getBearing() };
+    // a building between the camera and the car: lift the camera over it (and fade buildings right
+    // down) until the view is clear again, then settle back slowly
+    if (chase && now - (this.occAt || 0) > 200) { this.occAt = now; if (this.blocked([la, lo])) this.clearAt = now; }
+    const hidden = chase && now - (this.clearAt || -1e9) < 1500;
+    const goalPitch = !chase ? 60 : hidden ? Math.max(35, (this.pitchNow ?? 70) - 12) : 70;
+    this.pitchNow = duration || this.pitchNow == null ? goalPitch : this.pitchNow + (goalPitch - this.pitchNow) * ease(goalPitch < this.pitchNow ? 0.35 : 2.5);
+    this.buildingOpacity(!chase ? 0.75 : hidden ? 0.18 : 0.4);
+    const opts = { center: [lo, la], zoom: Math.max(12, Math.min(20, (chase ? 18.4 - pull : 17.4) + this.zoomBias)), pitch: this.pitchNow, bearing: this.heading ?? this.map.getBearing() };
     const el = this.map.getContainer();
     el.classList.toggle('cam-chase', chase);
     // the car sits low in the picture, with the road ahead filling the rest
@@ -178,6 +184,26 @@ export class Map3D {
     const swing = chase ? -(this.turn || 0) / 60 * el.clientWidth * 0.12 : 0;
     opts.offset = [swing, el.clientHeight * (chase ? 0.24 : 0.15)];
     this.map.easeTo({ ...opts, duration });
+  }
+
+  // Is a building standing in front of the car, seen from the camera?
+  blocked([la, lo]) {
+    const m = this.map;
+    if (!m.getLayer('building-3d') || m.getZoom() < 14) return false;
+    const el = m.getContainer(), p = m.project([lo, la]);
+    if (p.y < 0 || p.y > el.clientHeight) return false;
+    let feats;
+    try { feats = m.queryRenderedFeatures([[p.x - 14, p.y - 26], [p.x + 14, p.y + 6]], { layers: ['building-3d'] }); } catch { return false; }
+    if (!feats.length) return false;
+    // "in front" means part of the building is nearer the camera than the car is
+    const near = m.unproject([el.clientWidth / 2, el.clientHeight]);
+    const d = (a, b) => Math.hypot((a[0] - b[0]) * Math.cos(la * Math.PI / 180), a[1] - b[1]);
+    const car = d([lo, la], [near.lng, near.lat]);
+    for (const f of feats) {
+      const g = f.geometry, rings = g.type === 'Polygon' ? g.coordinates : g.type === 'MultiPolygon' ? g.coordinates.flat() : [];
+      for (const r of rings) for (const v of r) if (d(v, [near.lng, near.lat]) < car - 0.00004) return true;
+    }
+    return false;
   }
 
   buildingOpacity(o) {
