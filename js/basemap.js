@@ -13,15 +13,55 @@ const VECTOR_ATTR = '<a href="https://openfreemap.org" target="_blank" rel="noop
 export const RASTER_STYLE = {
   version: 8,
   sources: { osm: { type: 'raster', tileSize: 256, maxzoom: 19, tiles: [OSM_TILES], attribution: OSM_ATTR } },
-  layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#1d2230' } }, { id: 'osm', type: 'raster', source: 'osm' }],
+  layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#04070c' } }, { id: 'osm', type: 'raster', source: 'osm' }],
 };
 
 // 'auto' follows the time of day: dark from 6 PM to 6 AM
 export function mapTheme() {
-  const pref = store.settings().mapStyle || 'auto';
+  const pref = store.settings().mapStyle || 'dark';
   if (pref === 'light' || pref === 'dark') return pref;
   const h = new Date().getHours();
   return h >= 18 || h < 6 ? 'dark' : 'light';
+}
+
+// The night map recoloured for the Neon HUD look: near-black ground, deep blue water,
+// roads drawn in dim cyan (main roads brighter), quiet blue-grey labels.
+const NEON = {
+  background: { 'background-color': '#04070c' },
+  water: { 'fill-color': '#061a2a' },
+  waterway: { 'line-color': '#061a2a' },
+  landuse_residential: { 'fill-color': '#05090f' },
+  landcover_wood: { 'fill-color': '#04130f' },
+  landuse_park: { 'fill-color': '#04130f' },
+  building: { 'fill-color': '#08111a', 'fill-outline-color': '#0d2230' },
+  'aeroway-area': { 'fill-color': '#060b12' },
+  'aeroway-taxiway': { 'line-color': '#0c2230' },
+  'aeroway-runway': { 'line-color': '#0c2a3a' },
+  'aeroway-runway-casing': { 'line-color': 'rgba(0,240,255,0.15)' },
+  highway_path: { 'line-color': '#0c2532' },
+  highway_minor: { 'line-color': '#0e2836' },
+  highway_major_casing: { 'line-color': 'rgba(0,200,230,0.28)' },
+  highway_major_inner: { 'line-color': '#0a2a38' },
+  highway_major_subtle: { 'line-color': '#11465a' },
+  highway_motorway_casing: { 'line-color': 'rgba(0,240,255,0.45)' },
+  highway_motorway_inner: { 'line-color': '#0b3546' },
+  highway_motorway_subtle: { 'line-color': '#14566c' },
+  railway_transit: { 'line-color': '#2a1a3a' },
+  railway_minor: { 'line-color': '#2a1a3a' },
+  railway: { 'line-color': '#3a1d4a' },
+  railway_transit_dashline: { 'line-color': '#04070c' },
+  railway_minor_dashline: { 'line-color': '#04070c' },
+  railway_dashline: { 'line-color': '#04070c' },
+};
+function neon(style) {
+  for (const l of style.layers || []) {
+    const p = NEON[l.id];
+    if (p) l.paint = { ...(l.paint || {}), ...p };
+    else if (l.type === 'symbol' && l.paint && 'text-color' in l.paint) {
+      l.paint['text-color'] = l.id.startsWith('highway') ? '#4f7584' : '#7f9aa8';
+      l.paint['text-halo-color'] = 'rgba(4,7,12,0.9)';
+    }
+  }
 }
 
 const styles = {};
@@ -33,7 +73,7 @@ export function loadStyle(theme = mapTheme()) {
     const timer = setTimeout(() => ctl.abort(), 8000);
     styles[theme] = fetch(STYLE_URL[theme], { signal: ctl.signal })
       .then(r => { if (!r.ok) throw new Error('style ' + r.status); return r.json(); })
-      .then(s => { resolved[theme] = s; return s; })
+      .then(s => { if (theme === 'dark') neon(s); resolved[theme] = s; return s; })
       .catch(e => { console.warn('Vector map unavailable, using plain tiles', e); delete styles[theme]; return null; })
       .finally(() => clearTimeout(timer));
   }
@@ -56,7 +96,7 @@ export function add3dBuildings(map, theme, opacity = 0.8) {
       filter: ['!', ['has', 'hide_3d']],
       paint: {
         'fill-extrusion-base': ['get', 'render_min_height'], 'fill-extrusion-height': ['get', 'render_height'],
-        'fill-extrusion-color': theme === 'dark' ? '#414a5e' : 'hsl(35,8%,85%)', 'fill-extrusion-opacity': opacity,
+        'fill-extrusion-color': theme === 'dark' ? '#123544' : 'hsl(35,8%,85%)', 'fill-extrusion-opacity': opacity,
       },
     }, firstSymbol && firstSymbol.id);
   } else map.setPaintProperty('building-3d', 'fill-extrusion-opacity', opacity);

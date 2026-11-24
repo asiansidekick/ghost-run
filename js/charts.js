@@ -18,7 +18,7 @@ function setup(canvas) {
 const PAD = { l: 34, r: 8, t: 10, b: 20 };
 
 function frame(ctx, w, h, yMin, yMax, ticks, fmt) {
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = '500 10px "JetBrains Mono", ui-monospace, monospace';
   ctx.fillStyle = css('--muted');
   ctx.strokeStyle = css('--grid');
   ctx.lineWidth = 1;

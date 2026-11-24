@@ -111,7 +111,7 @@ export function elevChart(canvas, prof, atM = null) {
   ctx.strokeStyle = css('--text'); ctx.lineWidth = 1.5; ctx.beginPath();
   prof.d.forEach((m, i) => (i ? ctx.lineTo(X(m), Y(prof.e[i])) : ctx.moveTo(X(m), Y(prof.e[i]))));
   ctx.stroke();
-  ctx.fillStyle = css('--muted'); ctx.font = '10px system-ui, sans-serif';
+  ctx.fillStyle = css('--muted'); ctx.font = '500 10px "JetBrains Mono", ui-monospace, monospace';
   ctx.fillText(prof.max + ' m', 2, Y(prof.max) + 3); ctx.fillText(prof.min + ' m', 2, Y(prof.min) + 3);
   const km = total / 1000;
   ctx.fillText('0', pad.l, H - 3); ctx.textAlign = 'right'; ctx.fillText((km < 10 ? km.toFixed(1) : Math.round(km)) + ' km', W - pad.r, H - 3); ctx.textAlign = 'left';

@@ -50,8 +50,8 @@ export class LiveMap {
       // line widths grow with zoom, like a sat-nav
       const w = k => ['interpolate', ['exponential', 1.5], ['zoom'], 12, k * 0.45, 16, k, 19, k * 1.8];
       m.addLayer({ id: 'guide-casing', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#000', 'line-width': w(14), 'line-opacity': 0.85 } }, before);
-      m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#facc15', 'line-width': w(8) } }, before);
-      m.addLayer({ id: 'trail', type: 'line', source: 'trail', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#3b82f6', 'line-width': w(5), 'line-opacity': 0.9 } }, before);
+      m.addLayer({ id: 'guide', type: 'line', source: 'guide', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ff2bd6', 'line-width': w(8) } }, before);
+      m.addLayer({ id: 'trail', type: 'line', source: 'trail', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#00f0ff', 'line-width': w(5), 'line-opacity': 0.9 } }, before);
       this.ready = true;
       res();
     }));
@@ -103,7 +103,7 @@ export class LiveMap {
 
   setGhost(ll, label) {
     if (!this.ghost) {
-      this.ghost = this.marker('<div class="live-dot ghost-dot" style="--c:#e2e8f0"><i></i><span class="spd">Ghost</span></div>').setLngLat([ll[1], ll[0]]).addTo(this.map);
+      this.ghost = this.marker('<div class="live-dot ghost-dot" style="--c:#ff2bd6"><i></i><span class="spd">Ghost</span></div>').setLngLat([ll[1], ll[0]]).addTo(this.map);
     }
     this.ghost.setLngLat([ll[1], ll[0]]);
     const sp = this.ghost.getElement().querySelector('.spd');
@@ -159,26 +159,26 @@ export class FlatLiveMap {
     this.map = L.map(el, { zoomControl: false }).setView(center || [13.7563, 100.5018], 16);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(this.map);
     this.casing = L.polyline([], { color: '#000', weight: 13, opacity: 0.85 }).addTo(this.map);
-    this.guide = L.polyline([], { color: '#facc15', weight: 7 }).addTo(this.map);
-    this.trail = L.polyline([], { color: '#3b82f6', weight: 4, opacity: 0.9 }).addTo(this.map);
+    this.guide = L.polyline([], { color: '#ff2bd6', weight: 7 }).addTo(this.map);
+    this.trail = L.polyline([], { color: '#00f0ff', weight: 4, opacity: 0.9 }).addTo(this.map);
     this.map.on('dragstart', () => onUserMove && onUserMove());
   }
   setGuide(points) {
     const ll = points.map(p => [p.la, p.lo]);
     this.casing.setLatLngs(ll); this.guide.setLatLngs(ll);
-    L.circleMarker(ll[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).addTo(this.map);
+    L.circleMarker(ll[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#3cffb0', fillOpacity: 1 }).addTo(this.map);
     L.circleMarker(ll[ll.length - 1], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).addTo(this.map);
   }
   setTrail(track) { this.trail.setLatLngs(track); }
   setMe(ll, speedText, over) {
-    if (!this.me) this.me = L.marker(ll, { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot" style="--c:#3b82f6"><i></i><span class="spd">0</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000, interactive: false }).addTo(this.map);
+    if (!this.me) this.me = L.marker(ll, { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot" style="--c:#00f0ff"><i></i><span class="spd">0</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 1000, interactive: false }).addTo(this.map);
     this.me.setLatLng(ll);
     const el = this.me.getElement();
     el?.querySelector('.live-dot')?.classList.toggle('over', !!over);
     const sp = el?.querySelector('.spd'); if (sp) sp.textContent = speedText;
   }
   setGhost(ll, label) {
-    if (!this.ghost) this.ghost = L.marker(ll, { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot ghost-dot" style="--c:#e2e8f0"><i></i><span class="spd">Ghost</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 900, interactive: false }).addTo(this.map);
+    if (!this.ghost) this.ghost = L.marker(ll, { icon: L.divIcon({ className: 'dot-wrap', html: '<div class="live-dot ghost-dot" style="--c:#ff2bd6"><i></i><span class="spd">Ghost</span></div>', iconSize: [26, 26], iconAnchor: [13, 13] }), zIndexOffset: 900, interactive: false }).addTo(this.map);
     this.ghost.setLatLng(ll);
     const sp = this.ghost.getElement()?.querySelector('.spd'); if (sp) sp.textContent = label;
   }

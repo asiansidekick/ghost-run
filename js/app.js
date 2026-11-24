@@ -19,10 +19,12 @@ import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 8:30 PM (v35)';
+export const APP_VERSION = '25 Nov 2026, 1:00 AM (v36)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
+// the Neon HUD restyle: switch the map to the neon night look once; Settings can still pick light
+{ const s0 = store.settings(); if (!s0.neonMap) store.saveSettings({ ...s0, mapStyle: s0.mapStyle === 'light' ? 'light' : 'dark', neonMap: 1 }); }
 let cleanup = null;
 
 // ---------- helpers ----------
@@ -38,6 +40,43 @@ const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s
 const fmtDate = t => new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const fmtTime = t => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 const cap = t => t.charAt(0).toUpperCase() + t.slice(1);
+// a small line drawing of a route, for lists
+function routeThumb(pts) {
+  if (!pts || pts.length < 2) return '<svg class="route-thumb" viewBox="0 0 54 54"></svg>';
+  const step = Math.max(1, Math.floor(pts.length / 60));
+  const p = pts.filter((_, i) => i % step === 0 || i === pts.length - 1);
+  const k = Math.cos(p[0].la * Math.PI / 180);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const q of p) { const x = q.lo * k, y = -q.la; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const sc = 40 / Math.max(x1 - x0, y1 - y0, 1e-9), ox = 27 - (x0 + x1) / 2 * sc, oy = 27 - (y0 + y1) / 2 * sc;
+  const xy = q => [(q.lo * k * sc + ox).toFixed(1), (-q.la * sc + oy).toFixed(1)];
+  const [sx, sy] = xy(p[0]);
+  return `<svg class="route-thumb" viewBox="0 0 54 54" aria-hidden="true"><path d="M${p.map(q => xy(q).join(' ')).join(' L')}"/><circle cx="${sx}" cy="${sy}" r="2.6"/></svg>`;
+}
+// the last seven days at a glance
+function weekPanel(done) {
+  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+  const start = day0.getTime() - 6 * 86400000;
+  const recent = done.filter(d => d.startedAt >= start && !d.sample);
+  const perDay = Array(7).fill(0);
+  let dist = 0, ms = 0;
+  for (const d of recent) {
+    const A = d.summary || {};
+    dist += A.distance || 0; ms += A.durationMs || 0;
+    perDay[Math.min(6, Math.floor((d.startedAt - start) / 86400000))] += A.distance || 0;
+  }
+  const max = Math.max(...perDay, 1);
+  const days = [...Array(7)].map((_, i) => new Date(start + i * 86400000).toLocaleDateString('en-GB', { weekday: 'narrow' }));
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  return `<section class="card week">
+    <div class="week-head"><span class="lbl">Last 7 days</span><span class="lbl" style="color:var(--accent)">${recent.length ? 'Active' : 'Idle'}</span></div>
+    <div><div class="lbl">Distance</div><div class="wk-num">${(dist / 1000).toFixed(dist >= 100000 ? 0 : 1)}<small>km</small></div></div>
+    <div><div class="lbl">Runs</div><div class="wk-num">${recent.length}</div></div>
+    <div><div class="lbl">Time</div><div class="wk-num">${h ? `${h}<small>h</small>${String(m).padStart(2, '0')}` : `${m}<small>min</small>`}</div></div>
+    <div class="wk-bars">${perDay.map((v, i) => `<span class="${i === 6 ? 'on' : ''}" style="height:${Math.max(4, v / max * 100)}%"></span>`).join('')}</div>
+    <div class="wk-days">${days.map((d, i) => `<span class="${i === 6 ? 'on' : ''}">${d}</span>`).join('')}</div>
+  </section>`;
+}
 const driveTitle = d => d.name || `${cap(actOf(d).noun)}, ${fmtDate(d.startedAt)}`;
 
 function toast(msg, ms = 2600) {
@@ -60,6 +99,9 @@ async function route() {
   if (cleanup) { try { cleanup(); } catch {} cleanup = null; }
   window.scrollTo(0, 0);
   const h = location.hash;
+  const vname = h === '' || h === '#' || h === '#/' ? 'home' : h === '#/plan' || h.startsWith('#/plan/') ? 'plan' : h === '#/settings' ? 'settings' : h === '#/record' ? 'record' : 'other';
+  document.body.dataset.view = vname;
+  document.querySelectorAll('.tabbar a').forEach(a => a.classList.toggle('on', a.dataset.tab === vname));
   try {
     if (h.startsWith('#s=') || h.startsWith('#r=')) return await sharedView(h.slice(3));
     if (h === '#/record') {
@@ -111,19 +153,21 @@ async function homeView() {
           <button class="btn ghost" data-finish="${esc(d.id)}">Finish it</button>
         </div>
       </section>`).join('')}
+    ${done.some(d => !d.sample) ? weekPanel(done) : ''}
     <a href="#/record" class="btn big start">${recorder.active ? 'Back to recording' : 'Start recording'}</a>
-    ${recorder.active ? '' : `<a href="#/plan" class="btn ghost plan-btn">🧭 Plan a route or navigate somewhere</a>`}
+    ${recorder.active ? '' : `<a href="#/plan" class="btn ghost plan-btn">Plan a route or navigate somewhere</a>`}
     ${!standalone ? `<p class="hint">Tip: add Ghost Run to your home screen. On iPhone tap Share, then “Add to Home Screen”. On Android use the browser menu.</p>` : ''}
-    ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">
+    ${routes.length ? `<h2 class="section-title">My routes</h2><ul class="drive-list">${routes.map(r => `<li><a href="#/route/${encodeURIComponent(r.id)}" class="drive-item">${routeThumb(r.points)}<div class="drive-body">
         <div class="drive-name">${esc(r.name)}</div>
-        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned ${ROUTE_MODES[r.plan.mode || 'car'].icon} · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></a></li>`).join('')}</ul>` : ''}
+        <div class="drive-meta">${r.from ? `From ${esc(r.from)} · ` : ''}${r.plan ? `Planned ${ROUTE_MODES[r.plan.mode || 'car'].icon} · ${fmtKm(r.distance || 0)} · ` : ''}Tap to follow it</div></div></a></li>`).join('')}</ul>` : ''}
     <div class="list-head"><h2 class="section-title">My recordings</h2>${done.length ? `<button class="btn small ghost" id="pickMode">Select</button>` : ''}</div>
     ${done.length ? `<ul class="drive-list">${done.map(d => {
       const A = d.summary || {};
-      return `<li class="pickable"><input type="checkbox" class="pick-box" data-id="${esc(d.id)}" aria-label="Pick this drive"><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">
+      return `<li class="pickable"><input type="checkbox" class="pick-box" data-id="${esc(d.id)}" aria-label="Pick this drive"><a href="#/drive/${encodeURIComponent(d.id)}" class="drive-item">${routeThumb(d.points)}<div class="drive-body">
         <div class="drive-name"><span class="act-ico">${actOf(d).icon}</span> ${esc(driveTitle(d))}</div>
-        <div class="drive-meta">${d.guide ? `Followed ${esc(d.guide.name)} · ` : ''}${esc(fmtDate(d.startedAt))} · ${fmtKm(A.distance || 0)} · ${fmtDur(A.durationMs || 0)}
-        ${!actOf(d).limits ? '' : A.speedingCount ? `<span class="tag red">${A.speedingCount} over limit</span>` : A.hasLimits ? '<span class="tag green">Under limits</span>' : ''}</div>
+        <div class="drive-meta">${d.guide ? `Followed ${esc(d.guide.name)} · ` : ''}${esc(fmtDate(d.startedAt))}
+        ${!actOf(d).limits ? '' : A.speedingCount ? `<span class="tag red">${A.speedingCount} over</span>` : A.hasLimits ? '<span class="tag green">Clean</span>' : ''}</div></div>
+        <div class="run-side"><span class="run-time">${A.durationMs >= 3600000 ? fmtDur(A.durationMs) : fmtClock(A.durationMs || 0)}</span><span class="lbl">${fmtKm(A.distance || 0)}</span></div>
       </a></li>`;
     }).join('')}</ul>` : `
       <section class="card empty">
@@ -657,13 +701,13 @@ function renderDrive(drive, { own, save }) {
   flush();
   for (const e of A.events) {
     const p = A.pts[e.i];
-    pins.push({ ll: [p.la, p.lo], fill: '#f59e0b', title: e.type === 'brake' ? 'Hard braking' : 'Hard acceleration' });
-    L.circleMarker([p.la, p.lo], { radius: 6, color: '#fff', weight: 2, fillColor: '#f59e0b', fillOpacity: 1 })
+    pins.push({ ll: [p.la, p.lo], fill: '#ffb020', title: e.type === 'brake' ? 'Hard braking' : 'Hard acceleration' });
+    L.circleMarker([p.la, p.lo], { radius: 6, color: '#fff', weight: 2, fillColor: '#ffb020', fillOpacity: 1 })
       .bindPopup(`${e.type === 'brake' ? 'Hard braking' : 'Hard acceleration'}, ${Math.abs(e.g).toFixed(2)} g<br>${fmtTime(p.t)}`).addTo(map);
   }
   const first = A.pts[0], last = A.pts[A.pts.length - 1];
-  pins.push({ ll: [first.la, first.lo], fill: '#22c55e', title: 'Start' }, { ll: [last.la, last.lo], fill: '#111', title: 'Finish' });
-  L.circleMarker([first.la, first.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
+  pins.push({ ll: [first.la, first.lo], fill: '#3cffb0', title: 'Start' }, { ll: [last.la, last.lo], fill: '#111', title: 'Finish' });
+  L.circleMarker([first.la, first.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#3cffb0', fillOpacity: 1 }).bindPopup('Start').addTo(map);
   L.circleMarker([last.la, last.lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
   map.fitBounds(L.latLngBounds(A.pts.map(p => [p.la, p.lo])), { padding: [24, 24] });
   const trail = L.polyline([], { color: '#fff', weight: 3, opacity: 0.85 }).addTo(map);
@@ -900,7 +944,7 @@ function dotIcon(color) {
   return L.divIcon({ className: 'dot-wrap', html: `<div class="live-dot" style="--c:${color}"><i></i><span class="spd">0</span></div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
 }
 
-const RACE_COLORS = ['#3b82f6', '#f472b6', '#facc15', '#22d3ee', '#a78bfa', '#fb923c'];
+const RACE_COLORS = ['#00f0ff', '#ff2bd6', '#ffe14d', '#3cffb0', '#a78bfa', '#ff8a3d'];
 
 function renderCompareList(box, group, onRace) {
   const best = group.entries[0].ms;
@@ -1183,7 +1227,7 @@ function renderRoute(r) {
   };
   const map = newMap($('#map'));
   const line = L.polyline(pts.map(p => [p.la, p.lo]), { color: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), weight: 5 }).addTo(map);
-  L.circleMarker([pts[0].la, pts[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#22c55e', fillOpacity: 1 }).bindPopup('Start').addTo(map);
+  L.circleMarker([pts[0].la, pts[0].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#3cffb0', fillOpacity: 1 }).bindPopup('Start').addTo(map);
   L.circleMarker([pts[pts.length - 1].la, pts[pts.length - 1].lo], { radius: 7, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindPopup('Finish').addTo(map);
   map.fitBounds(line.getBounds(), { padding: [24, 24] });
   let stepMarker = null;
@@ -1198,7 +1242,7 @@ function renderRoute(r) {
       if (!s.loc) return;
       const ll = [s.loc[1], s.loc[0]];
       if (stepMarker) stepMarker.remove();
-      stepMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#f59e0b', fillOpacity: 1 }).addTo(map);
+      stepMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#ffb020', fillOpacity: 1 }).addTo(map);
       map.setView(ll, 17);
       $('#map').scrollIntoView({ behavior: 'smooth' });
     });
@@ -1442,7 +1486,7 @@ function settingsView() {
         <select id="sauto">${[3, 5, 10, 15].map(m => `<option value="${m}" ${m === s.autoStopMin ? 'selected' : ''}>${m} minutes</option>`).join('')}</select>
       </label>
       <label>Map style
-        <select id="sstyle">${[['auto', 'Day and night (dark after 6 PM)'], ['light', 'Always light'], ['dark', 'Always dark']].map(([v, t]) => `<option value="${v}" ${v === (s.mapStyle || 'auto') ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        <select id="sstyle">${[['dark', 'Neon (dark)'], ['auto', 'Day and night (light by day)'], ['light', 'Always light']].map(([v, t]) => `<option value="${v}" ${v === (s.mapStyle || 'dark') ? 'selected' : ''}>${t}</option>`).join('')}</select>
       </label>
       <label>Hills and terrain
         <select id="sterrain">${[['auto', '3D hills in the planner, shading and contours elsewhere'], ['on', '3D hills everywhere (replays may stutter)'], ['flat', 'Shading and contours only'], ['off', 'Off']].map(([v, t]) => `<option value="${v}" ${v === (s.terrain || 'auto') ? 'selected' : ''}>${t}</option>`).join('')}</select>

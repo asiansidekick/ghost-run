@@ -10,7 +10,7 @@ export async function plan3D(el) {
   map.setMaxPitch(70);
   map.jumpTo({ pitch: 50 });
   m3.cam = 'plan';
-  const casing = m3.liveLine('#000', 10, 0.85), line = m3.liveLine('#facc15', 6, 1);
+  const casing = m3.liveLine('#000', 10, 0.85), line = m3.liveLine('#00f0ff', 6, 1);
   let me = null;
   return {
     is3D: true,
@@ -53,7 +53,7 @@ export function flatPlanMap(el, newMap) {
     },
     setRoute(lls) {
       if (route) { route.remove(); route = null; }
-      if (lls && lls.length) route = L.layerGroup([L.polyline(lls, { color: '#000', weight: 10, opacity: 0.8 }), L.polyline(lls, { color: '#facc15', weight: 6 })]).addTo(map);
+      if (lls && lls.length) route = L.layerGroup([L.polyline(lls, { color: '#000', weight: 10, opacity: 0.8 }), L.polyline(lls, { color: '#00f0ff', weight: 6 })]).addTo(map);
     },
     fit(lls) { map.fitBounds(L.latLngBounds(lls), { padding: [30, 30] }); },
     setView(ll, z) { map.setView(ll, z); },
@@ -61,7 +61,7 @@ export function flatPlanMap(el, newMap) {
     zoom() { return map.getZoom(); },
     onClick(cb) { map.on('click', e => cb([e.latlng.lat, e.latlng.lng])); },
     setMe(ll) {
-      if (!me) me = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#3b82f6', fillOpacity: 1, interactive: false }).addTo(map);
+      if (!me) me = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#00f0ff', fillOpacity: 1, interactive: false }).addTo(map);
       else me.setLatLng(ll);
     },
     remove() { try { map.stop(); } catch {} setTimeout(() => { try { map.off(); map.remove(); } catch {} }, 600); },

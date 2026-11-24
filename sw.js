@@ -1,10 +1,11 @@
 // Offline support: the app itself is cached; map tiles and road data always come from the network.
-const VERSION = 'sl-v35';
+const VERSION = 'sl-v36';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/analysis.js', 'js/charts.js', 'js/compare.js', 'js/directions.js', 'js/export.js', 'js/guide.js', 'js/turns.js', 'js/livemap.js', 'js/plan.js', 'js/basemap.js', 'js/map3d.js', 'js/planmap.js', 'js/activity.js', 'js/terrain.js', 'js/elevation.js', 'vendor/maplibre-contour.min.js',
   'js/limits.js', 'js/recorder.js', 'js/sample.js', 'js/share.js', 'js/store.js',
   'vendor/leaflet.js', 'vendor/leaflet.css', 'icons/icon-192.png',
+  'vendor/fonts/chakra-500-latin.woff2', 'vendor/fonts/chakra-600-latin.woff2', 'vendor/fonts/chakra-700-latin.woff2', 'vendor/fonts/jbmono-latin.woff2',
 ];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
