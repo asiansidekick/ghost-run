@@ -19,7 +19,7 @@ import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 6:00 PM (v33)';
+export const APP_VERSION = '24 Nov 2026, 8:15 PM (v34)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -151,8 +151,8 @@ async function homeView() {
     const sync = () => {
       const n = picks().length;
       view.querySelectorAll('.pick-box').forEach(b => { b.disabled = !b.checked && n >= RACE_COLORS.length; });
-      $('#pickPlay').disabled = n < 2;
-      $('#pickPlay').textContent = n < 2 ? 'Play 2+' : `▶ Play ${n}`;
+      $('#pickPlay').disabled = n < 1;
+      $('#pickPlay').textContent = n < 1 ? 'Play' : n === 1 ? '▶ Play' : `▶ Race ${n}`;
       $('#pickDel').disabled = n < 1;
       $('#pickDel').textContent = n ? `Delete ${n}` : 'Delete';
     };
@@ -192,6 +192,8 @@ async function homeView() {
     };
     $('#pickPlay').onclick = async () => {
       const ids = picks();
+      // one drive: open it and start its replay
+      if (ids.length === 1) { view.classList.remove('picking'); autoPlay = ids[0]; location.hash = '#/drive/' + encodeURIComponent(ids[0]); return; }
       const chosen = done.filter(d => ids.includes(d.id));
       view.classList.remove('picking');
       renderRace(groupForSelection(chosen));
@@ -208,6 +210,7 @@ async function homeView() {
 
 // ---------- record ----------
 let pendingGuide = null;
+let autoPlay = null; // a drive to start replaying as soon as its page opens
 let lastReroute = 0;
 const voice = new Voice();
 const turnsCache = new WeakMap();
@@ -847,7 +850,8 @@ function renderDrive(drive, { own, save }) {
       location.hash = '#/';
     };
   }
-  if (webglOk()) setView(viewMode); else viewMode = '2d';
+  const viewReady = webglOk() ? setView(viewMode) : (viewMode = '2d', null);
+  if (own && autoPlay === drive.id) { autoPlay = null; Promise.resolve(viewReady).then(() => { if (document.body.contains($('#play')) && !playing) $('#play').click(); }); }
   mapHint($('.map-box'), matchMedia('(pointer: coarse)').matches ? undefined : 'Scroll to zoom · right-drag to turn and tilt');
   cleanup = () => { stopPlay(); window.removeEventListener('resize', onResize); dropMap(map); if (m3) { m3.remove(); m3 = null; } };
 
