@@ -14,17 +14,36 @@ export const ROUTERS = {
 };
 const SEARCH = 'https://nominatim.openstreetmap.org/search';
 
+// Results near you come first. Far-away results are only shown when nothing local matches, and then
+// only when every word you typed is in their name or address (no "close enough" matches abroad).
+const LOCAL_DEG = 0.5; // about 55 km around you (or the middle of the map)
+const fold = t => String(t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+const words = q => fold(q).split(/[\s,]+/).filter(w => w.length >= 2);
+export function strictMatch(q, r) { const t = fold(r.name + ' ' + r.detail); return words(q).every(w => t.includes(w)); }
+function looseMatch(q, r) { const t = fold(r.name + ' ' + r.detail); return words(q).every(w => t.includes(w) || fuzzyScore(w, r.name) < Infinity); }
+export function dedupe(list) {
+  const seen = new Set();
+  return list.filter(r => { const k = fold(r.name) + '|' + r.la.toFixed(2) + ',' + r.lo.toFixed(2); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+// local results first; far ones only if nothing (or almost nothing) local, and only exact matches
+function localFirst(q, local, wide, near) {
+  const isLocal = r => Math.abs(r.la - near[0]) <= LOCAL_DEG && Math.abs(r.lo - near[1]) <= LOCAL_DEG;
+  const loc = dedupe(local.filter(isLocal).filter(r => looseMatch(q, r)));
+  const far = loc.length >= 3 ? [] : dedupe(wide.filter(r => !isLocal(r) && strictMatch(q, r)));
+  return [...nearFirst(loc, near), ...nearFirst(far, near)];
+}
+
 // Nominatim asks for searches on submit only (no search-as-you-type), at most one a second.
-export async function searchPlaces(q, near) {
+async function nominatim(q, near, bounded) {
   const u = new URL(SEARCH);
   u.searchParams.set('format', 'jsonv2');
   u.searchParams.set('q', q);
-  u.searchParams.set('limit', '6');
+  u.searchParams.set('limit', '8');
   u.searchParams.set('accept-language', 'en,th');
   if (near) {
-    // prefer places near you, without ruling out anywhere else
-    const [la, lo] = near, d = 0.6;
+    const [la, lo] = near, d = LOCAL_DEG;
     u.searchParams.set('viewbox', [lo - d, la + d, lo + d, la - d].map(x => x.toFixed(4)).join(','));
+    if (bounded) u.searchParams.set('bounded', '1');
   }
   const res = await fetch(u);
   if (!res.ok) throw new Error('Search service ' + res.status);
@@ -35,32 +54,42 @@ export async function searchPlaces(q, near) {
     return { name, detail: parts.filter(p => p !== name).slice(0, 3).join(', '), la: +r.lat, lo: +r.lon };
   });
 }
+export async function searchPlaces(q, near) {
+  if (!near) return dedupe(await nominatim(q, null, false));
+  const local = await nominatim(q, near, true);
+  const wide = local.length >= 3 ? [] : await nominatim(q, near, false).catch(() => []);
+  return localFirst(q, local, wide, near);
+}
 
 // Suggestions while you type, from Photon (komoot's free OpenStreetMap search, made for search-as-you-type
 // and forgiving of small spelling mistakes). Nominatim isn't used for this: it asks for searches on submit only.
 const PHOTON = 'https://photon.komoot.io/api/';
-export async function suggestPlaces(q, near, signal) {
+async function photon(q, near, signal, bbox) {
   const u = new URL(PHOTON);
   u.searchParams.set('q', q);
-  u.searchParams.set('limit', '7');
+  u.searchParams.set('limit', '15');
   u.searchParams.set('lang', 'en');
   if (near) {
     u.searchParams.set('lat', near[0].toFixed(4)); u.searchParams.set('lon', near[1].toFixed(4));
     u.searchParams.set('zoom', '12'); u.searchParams.set('location_bias_scale', '0.1');
-    u.searchParams.set('limit', '15'); // more than we show, so nearby ones can be picked out
+    if (bbox) { const d = LOCAL_DEG; u.searchParams.set('bbox', [near[1] - d, near[0] - d, near[1] + d, near[0] + d].map(x => x.toFixed(4)).join(',')); }
   }
   const res = await fetch(u, { signal });
   if (!res.ok) throw new Error('Search service ' + res.status);
   const json = await res.json();
-  const seen = new Set();
-  const list = (json.features || []).map(f => {
+  return (json.features || []).map(f => {
     const p = f.properties || {}, [lo, la] = f.geometry.coordinates;
     const name = p.name || [p.housenumber, p.street].filter(Boolean).join(' ') || p.city || 'Place';
     const detail = [p.street !== name ? p.street : '', p.district, p.city !== name ? p.city : '', p.state !== p.city ? p.state : '', p.country]
       .filter((x, i, a) => x && a.indexOf(x) === i).slice(0, 3).join(', ');
     return { name, detail, la, lo };
-  }).filter(r => { const k = r.name + '|' + r.la.toFixed(3) + r.lo.toFixed(3); if (seen.has(k)) return false; seen.add(k); return true; });
-  return near ? nearFirst(list, near).slice(0, 7) : list.slice(0, 7);
+  });
+}
+export async function suggestPlaces(q, near, signal) {
+  if (!near) return dedupe(await photon(q, null, signal, false)).slice(0, 7);
+  const local = await photon(q, near, signal, true);
+  const wide = local.length >= 3 ? [] : await photon(q, near, signal, false).catch(e => { if (e.name === 'AbortError') throw e; return []; });
+  return localFirst(q, local, wide, near).slice(0, 7);
 }
 
 // Places near you (or near where the map is) first: the service's own order, nudged by distance,

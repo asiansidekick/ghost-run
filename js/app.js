@@ -11,7 +11,7 @@ import { compareGroup, positionAt } from './compare.js';
 import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
-import { searchPlaces, suggestPlaces, fuzzyScore, nearFirst, routeThrough } from './plan.js';
+import { searchPlaces, suggestPlaces, fuzzyScore, dedupe, routeThrough } from './plan.js';
 import { addBasemap, loadStyle, creditsButton } from './basemap.js';
 import { open3D, pinchZoom } from './map3d.js';
 import { plan3D, flatPlanMap } from './planmap.js';
@@ -19,7 +19,7 @@ import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '24 Nov 2026, 8:15 PM (v34)';
+export const APP_VERSION = '24 Nov 2026, 8:30 PM (v35)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -1352,7 +1352,7 @@ async function planView(saved = null) {
   }
   const recentMatches = q => recents().map(r => ({ ...r, recent: true, sc: fuzzyScore(q, r.name) })).filter(r => r.sc < Infinity).sort((a, b) => a.sc - b.sc).slice(0, 3);
   const withKm = list => list.map(r => r.km != null ? r : { ...r, km: hav(near()[0], near()[1], r.la, r.lo) / 1000 });
-  const merge = (a, b) => [...a, ...b.filter(r => !a.some(x => x.name === r.name && Math.abs(x.la - r.la) < 1e-3))];
+  const merge = (a, b) => dedupe([...a, ...b]);
   sq.addEventListener('focus', () => { if (!sq.value.trim() && recents().length) showList(withKm(recents().map(r => ({ ...r, recent: true })))); });
   sq.addEventListener('input', () => {
     clearTimeout(sugT); if (sugCtl) sugCtl.abort();
@@ -1366,7 +1366,7 @@ async function planView(saved = null) {
       try {
         const list = await suggestPlaces(q, near(), sugCtl.signal);
         if (sq.value.trim() !== q) return;
-        const all = withKm(merge(mine, list));
+        const all = withKm(merge(mine, list)).sort((x, y) => (x.km > 60) - (y.km > 60));
         showList(all, all.length ? '' : 'No matches yet. Keep typing, or tap Search.');
       } catch (err) { if (err.name !== 'AbortError' && sq.value.trim() === q) showList(mine, 'Suggestions aren’t available right now. Tap Search.'); }
     }, 300);
@@ -1380,10 +1380,10 @@ async function planView(saved = null) {
     // both services: Photon copes with spelling slips, Nominatim knows some names Photon doesn't
     const [a, b] = await Promise.allSettled([suggestPlaces(q, near()), searchPlaces(q, near())]);
     if (sq.value.trim() !== q) return;
-    const list = merge(merge(recentMatches(q), a.status === 'fulfilled' ? a.value : []), b.status === 'fulfilled' ? nearFirst(b.value, near()) : []);
-    if (list.length) showList(withKm(list).slice(0, 8));
+    const list = merge(merge(recentMatches(q), a.status === 'fulfilled' ? a.value : []), b.status === 'fulfilled' ? b.value : []);
+    if (list.length) showList(withKm(list).sort((x, y) => (x.km > 60) - (y.km > 60)).slice(0, 8));
     else if (a.status === 'rejected' && b.status === 'rejected') showList([], `Search isn't working right now (${esc(b.reason.message)}). You can still tap the map.`);
-    else showList([], 'Nothing found. Check the spelling or try a nearby place, or tap the map.');
+    else showList([], `Nothing called “${esc(q)}” nearby. OpenStreetMap may not list it: try its street or a landmark next to it, or tap the map.`);
   };
 
   const guide = () => ({
