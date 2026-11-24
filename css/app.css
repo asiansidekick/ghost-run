@@ -543,3 +543,34 @@ body[data-view=home] .picking ~ .tabbar, body.picking-on .tabbar { display: none
 body[data-view=home] .topbar-link, body[data-view=plan] .topbar-link, body[data-view=settings] .topbar-link { display: none; }
 .ghost-dot i { background: rgba(255, 43, 214, 0.35); border-color: #ff2bd6; border-style: dashed; }
 .ghost-dot .spd { background: rgba(255, 43, 214, 0.9); color: #fff; border-color: #ff2bd6; }
+
+/* replay HUD over the map */
+.ov { position: absolute; inset: 0; z-index: 650; pointer-events: none; }
+.ov-spd, .ov-gap, .ov-g { position: absolute; background: rgba(4, 8, 14, 0.78); border: 1px solid var(--border); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px); }
+.ov-spd { left: 8px; top: 8px; padding: 6px 12px 6px; min-width: 104px; display: flex; flex-direction: column; }
+.ov-spd .lbl { font-size: 0.58rem; }
+.ov-spd b { font: 700 2.9rem/0.95 var(--mono); letter-spacing: -0.04em; color: var(--accent); text-shadow: 0 0 16px rgba(0, 240, 255, 0.6); font-variant-numeric: tabular-nums; }
+.ov.over .ov-spd { border-color: var(--red); }
+.ov.over .ov-spd b { color: var(--red); text-shadow: 0 0 16px rgba(255, 59, 107, 0.7); }
+.ov-lim { position: absolute; left: 122px; top: 12px; width: 40px; height: 40px; border-radius: 50%; border: 4px solid #e11d48; background: #fff; color: #111;
+  display: grid; place-items: center; font: 800 0.95rem var(--mono); letter-spacing: -0.04em; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
+.ov.over .ov-lim { animation: limpulse 0.9s ease-in-out infinite; }
+@keyframes limpulse { 50% { box-shadow: 0 0 0 6px rgba(255, 59, 107, 0.45), 0 0 18px rgba(255, 59, 107, 0.8); } }
+.ov-gap { right: 8px; top: 48px; padding: 5px 12px; text-align: right; display: flex; flex-direction: column; }
+.ov-gap .lbl { font-size: 0.58rem; }
+.ov-gap b { font: 700 1.35rem/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+.ov-gap.ahead b { color: var(--green); text-shadow: 0 0 12px rgba(60, 255, 176, 0.6); }
+.ov-gap.behind b { color: var(--red); text-shadow: 0 0 12px rgba(255, 59, 107, 0.6); }
+.ov-g { right: 8px; top: 56px; width: 76px; padding: 4px 4px 3px; display: flex; flex-direction: column; align-items: center; }
+.ov-g svg { width: 66px; height: 66px; }
+.ov-g svg circle, .ov-g svg line { fill: none; stroke: rgba(0, 240, 255, 0.22); stroke-width: 1; }
+.ov-g svg .ov-gdot { fill: var(--accent); stroke: none; filter: drop-shadow(0 0 4px var(--accent)); transition: cx 0.12s linear, cy 0.12s linear; }
+.ov-g span { font: 500 0.6rem var(--mono); color: var(--muted); letter-spacing: 0.06em; }
+/* race: clock top right, gap under it, G-meter lower right */
+.race-wrap .ov-g { top: auto; bottom: 38px; }
+.race-wrap .ov-gap { top: 48px; }
+.race-fit { top: auto; bottom: 30px; right: 92px; }
+/* single drive: the steepness button moves down out of the speed panel's way */
+.map-box .grade-btn { top: auto; bottom: 48px; left: 8px; }
+@media (pointer: fine) { .map-box .grade-btn { left: 8px; } }

@@ -7,7 +7,7 @@ import { packDrive, packRoute, unpack, toDrive, shareUrl, shareLink } from './sh
 import { directionsFor, googleMapsUrl } from './directions.js';
 import { gpx, csv, saveFile } from './export.js';
 import { sampleDrive } from './sample.js';
-import { compareGroup, positionAt } from './compare.js';
+import { compareGroup, positionAt, timeAtProg } from './compare.js';
 import { guideFromDrive, guideFromRoute } from './guide.js';
 import { turnsFor, arrowFor, roundDist, Voice } from './turns.js';
 import { LiveMap, FlatLiveMap, loadMapLibre, webglOk } from './livemap.js';
@@ -19,7 +19,7 @@ import { profile, elevChart, gradeLines } from './elevation.js';
 import { ACTIVITIES, ROUTE_MODES, actKey, actOf, activityForMode, speedFor, guessActivity } from './activity.js';
 
 const BANGKOK = [13.7563, 100.5018];
-export const APP_VERSION = '25 Nov 2026, 1:00 AM (v36)';
+export const APP_VERSION = '25 Nov 2026, 2:20 AM (v37)';
 const $ = (s, el = document) => el.querySelector(s);
 const view = $('#view');
 const recorder = new Recorder();
@@ -622,7 +622,7 @@ function renderDrive(drive, { own, save }) {
     </div>
     ${own ? `<label class="act-row"><span class="muted small">Activity</span><select id="actSel" aria-label="Activity">${Object.entries(ACTIVITIES).map(([k, a]) => `<option value="${k}"${k === actKey(drive) ? ' selected' : ''}>${a.icon} ${a.label}</option>`).join('')}</select></label>` : ''}
     <p class="muted small">${esc(fmtDate(S.start))} to ${esc(new Date(S.end).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))}</p>
-    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div><button class="btn small ghost grade-btn" id="gradeBtn" hidden aria-pressed="false">⛰ Steepness</button><div class="gbar-overlay" id="gbar"${motor ? '' : ' hidden'}>${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
+    <div class="map-box"><div class="map" id="map"></div><div class="map map3d" id="map3d" hidden></div>${hudHTML({ limits: act.limits, gmeter: motor })}<button class="btn small ghost grade-btn" id="gradeBtn" hidden aria-pressed="false">⛰ Steepness</button><div class="gbar-overlay" id="gbar"${motor ? '' : ' hidden'}>${gBarHTML()}</div>${webglOk() ? '<button class="btn small ghost view3d-btn" id="v3d" aria-label="Change camera view">🚁</button>' : ''}</div>
     <div class="replay">
       <button class="btn small" id="play" aria-label="Play replay">▶</button>
       <input type="range" id="scrub" min="0" max="${A.pts.length - 1}" value="0" aria-label="Replay position">
@@ -738,6 +738,9 @@ function renderDrive(drive, { own, save }) {
   }
   const dotEls = () => [marker.getElement(), m3dot?.getElement()].map(e => e?.querySelector('.live-dot')).filter(Boolean);
   const setSpd = v => dotEls().forEach(d => { d.querySelector('.spd').textContent = spd(v).n; });
+  const latG = lateralG(A.pts);
+  let latSoft = null;
+  const hudAt = (p, v, g, lat) => setHud($('.map-box'), { v: spd(v).n, unit: spd(v).u, limit: act.limits ? p.limit : null, over: p.over, g: motor ? g : null, lat });
   const prevOf = i => { const q = A.pts[Math.max(0, i - 8)]; return [q.la, q.lo]; };
   // camera views: helicopter (default), street level, or the flat map
   const VIEWS = { heli: '🎥 Chase', street: '🚁 High', '2d': '🗺 2D' };
@@ -788,7 +791,7 @@ function renderDrive(drive, { own, save }) {
       }
     }
     dotEls().forEach(d => d.classList.toggle('over', !!p.over));
-    if (!playing) { setSpd(p.v); gSoft = p.a; setGBar($('#gbar'), p.a); }
+    if (!playing) { setSpd(p.v); gSoft = p.a; latSoft = latG[idx]; setGBar($('#gbar'), p.a); hudAt(p, p.v, p.a, latSoft); }
     if (pan && !map.getBounds().pad(-0.1).contains([p.la, p.lo])) map.panTo([p.la, p.lo]);
     scrub.value = idx;
     readout.innerHTML = `<span>${fmtClock(p.t - first.t)}</span><span class="${p.over ? 'red-text' : ''}"><b>${spd(p.v).n}</b> ${spd(p.v).u}</span>${act.limits ? `<span>limit ${p.limit ?? '–'}${p.limitSrc === 'd' ? '*' : ''}</span>` : ''}${motor ? `<span>${p.a >= 0 ? '+' : ''}${p.a.toFixed(2)} g</span>` : act.pace ? `<span>${Math.round(p.v)} km/h</span>` : ''}`;
@@ -826,6 +829,8 @@ function renderDrive(drive, { own, save }) {
       setSpd(a.v + f * (b.v - a.v));
       gSoft = ease(gSoft, a.a + f * (b.a - a.a));
       setGBar($('#gbar'), gSoft);
+      latSoft = ease(latSoft, latG[j] + f * (latG[Math.min(j + 1, A.pts.length - 1)] - latG[j]));
+      hudAt(a, a.v + f * (b.v - a.v), gSoft, latSoft);
       trail.setLatLngs([...trailPts, ll]);
       if (j !== idx) setIdx(j, true);
       if (j >= A.pts.length - 1) { stopPlay(); return; }
@@ -928,6 +933,54 @@ function setGBar(el, g) {
 }
 const ease = (prev, g, k = 0.18) => prev == null ? g : prev + (g - prev) * k;
 
+// ---------- replay HUD over the map: big speed, limit sign, gap to the ghost, G-meter ----------
+// Sideways g from how fast the heading turns at speed (positive = turning right).
+function lateralG(pts) {
+  const out = new Float32Array(pts.length);
+  for (let i = 2; i < pts.length - 2; i++) {
+    const a = pts[i - 2], b = pts[i], c = pts[i + 2];
+    if (b.gapBefore || c.gapBefore || (b.v || 0) < 5) continue;
+    const dt = (c.t - a.t) / 1000;
+    if (dt <= 0) continue;
+    let dh = bearing(b.la, b.lo, c.la, c.lo) - bearing(a.la, a.lo, b.la, b.lo);
+    dh = ((dh + 540) % 360) - 180;
+    out[i] = Math.max(-1, Math.min(1, (b.v / 3.6) * (dh * Math.PI / 180) / dt / 9.81));
+  }
+  return out;
+}
+const hudHTML = ({ limits, gmeter, gap }) => `<div class="ov">
+  <div class="ov-spd"><span class="lbl">Speed</span><b id="ovSpd">0</b><span class="lbl" id="ovUnit">km/h</span></div>
+  ${limits ? '<div class="ov-lim" id="ovLim" hidden></div>' : ''}
+  ${gap ? '<div class="ov-gap" id="ovGap" hidden><span class="lbl" id="ovGapL">vs</span><b id="ovGapV"></b></div>' : ''}
+  ${gmeter ? `<div class="ov-g"><svg viewBox="0 0 80 80" aria-hidden="true"><circle cx="40" cy="40" r="34"/><circle cx="40" cy="40" r="17"/><line x1="6" y1="40" x2="74" y2="40"/><line x1="40" y1="6" x2="40" y2="74"/><circle class="ov-gdot" id="ovGdot" cx="40" cy="40" r="5"/></svg><span id="ovGv">0.00 g</span></div>` : ''}
+</div>`;
+function setHud(root, { v, unit, limit, over, g, lat, gap, gapName }) {
+  const q = id => root.querySelector('#' + id);
+  const s = q('ovSpd');
+  if (!s) return;
+  s.textContent = v;
+  if (unit) q('ovUnit').textContent = unit;
+  root.querySelector('.ov').classList.toggle('over', !!over);
+  const L = q('ovLim');
+  if (L) { L.hidden = !limit; if (limit) L.textContent = limit; }
+  const G = q('ovGap');
+  if (G) {
+    G.hidden = gap == null;
+    if (gap != null) {
+      q('ovGapL').textContent = 'vs ' + gapName;
+      q('ovGapV').textContent = (gap <= 0 ? '−' : '+') + fmtClock(Math.abs(gap));
+      G.classList.toggle('ahead', gap <= 0); G.classList.toggle('behind', gap > 0);
+    }
+  }
+  const D = q('ovGdot');
+  if (D && g != null) {
+    // the dot shows where the body is pushed: back when speeding up, forward when braking, outward in a turn
+    const k = 34 / 0.6, x = Math.max(-34, Math.min(34, -(lat || 0) * k)), y = Math.max(-34, Math.min(34, g * k));
+    D.setAttribute('cx', (40 + x).toFixed(1)); D.setAttribute('cy', (40 + y).toFixed(1));
+    q('ovGv').textContent = Math.hypot(g, lat || 0).toFixed(2) + ' g';
+  }
+}
+
 // A short hint over a map on how to move it; fades after a few seconds or at the first touch.
 function mapHint(box, text = '🤏 Pinch to zoom · two fingers to turn and tilt') {
   if (!box) return;
@@ -1006,9 +1059,11 @@ async function raceFromStore(id) {
 function renderRace(group, fromHash) {
   if (!fromHash && cleanup) { try { cleanup(); } catch {} cleanup = null; }
   const entries = group.entries.slice(0, RACE_COLORS.length);
-  entries.forEach((e, k) => { e.color = RACE_COLORS[k]; });
+  // you are always cyan; everyone else takes the next colours in order
+  [...entries.filter(e => e.isRef), ...entries.filter(e => !e.isRef)].forEach((e, k) => { e.color = RACE_COLORS[k]; });
   const maxMs = Math.max(...entries.map(e => e.ms));
   const refId = entries.find(e => e.isRef)?.drive.id;
+  const refE = entries.find(e => e.isRef) || entries[0];
   window.scrollTo(0, 0);
   view.innerHTML = `
     <div class="race-head">
@@ -1019,6 +1074,7 @@ function renderRace(group, fromHash) {
       <div class="map race-map" id="map"></div>
       <div class="map race-map map3d" id="map3d" hidden></div>
       <div class="race-clock" id="clock">0:00</div>
+      ${hudHTML({ limits: actOf(refE.drive).limits, gmeter: !actOf(refE.drive).pace, gap: group.sameRoute !== false && entries.length > 1 })}
       ${webglOk() ? '<button class="btn small ghost view3d-btn race-3d" id="v3d">🗺 2D</button>' : ''}
       <button class="btn small ghost race-fit" id="fitAll" hidden>Show everyone</button>
     </div>
@@ -1036,7 +1092,6 @@ function renderRace(group, fromHash) {
       <span class="cmp-time">${fmtClock(e.ms)}</span><span class="cmp-red">${e.redCount ? `<span class="tag red">${e.redCount} red</span>` : '<span class="tag green">clean</span>'}</span></li>`).join('')}</ol></section>`;
   $('#back').onclick = () => { if (fromHash) history.back(); else route(); };
   const map = newMap($('#map'), { zoomSnap: 0 });
-  const refE = entries.find(e => e.isRef) || entries[0];
   const lines = [];
   if (group.sameRoute === false) {
     const all = [];
@@ -1153,6 +1208,21 @@ function renderRace(group, fromHash) {
       e.gSoft = playing ? ease(e.gSoft, p.g) : p.g;
       return { e, p };
     });
+    {
+      const me = rows.find(r => r.e === refE) || rows[0], ra = actOf(refE.drive), rs = v => speedFor(ra, v);
+      if (!refE.latG) refE.latG = lateralG(refE.A.pts);
+      refE.latSoft = playing ? ease(refE.latSoft, refE.latG[me.p.i] || 0) : refE.latG[me.p.i] || 0;
+      let gap = null, gapName = '';
+      if (group.sameRoute !== false && rows.length > 1) {
+        // the rival to beat: whoever else is furthest along
+        const riv = rows.filter(r => r !== me).sort((a, b) => b.p.prog - a.p.prog)[0];
+        const d = Math.min(me.p.prog, riv.p.prog);
+        // split at the furthest point both have passed (negative = you're ahead)
+        gap = me.p.done && riv.p.done ? me.e.ms - riv.e.ms : timeAtProg(me.e, d) - timeAtProg(riv.e, d);
+        gapName = (riv.e.label || '').split(/[ ,]/)[0] || 'ghost';
+      }
+      setHud($('.race-wrap'), { v: me.p.done ? '🏁' : rs(me.p.v).n, unit: rs(me.p.v).u, limit: ra.limits && !me.p.done ? me.p.limit : null, over: me.p.over && !me.p.done, g: ra.pace ? null : (me.p.done ? 0 : refE.gSoft || 0), lat: me.p.done ? 0 : refE.latSoft, gap, gapName });
+    }
     if (group.sameRoute !== false) rows.sort((a, b) => (b.p.done - a.p.done) || (a.p.done ? a.e.ms - b.e.ms : b.p.prog - a.p.prog));
     const lead = rows[0];
     $('#hud').innerHTML = rows.map(({ e, p }, k) => `

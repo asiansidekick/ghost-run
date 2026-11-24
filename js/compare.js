@@ -111,14 +111,25 @@ export function compareGroup(ref, candidates, myName) {
 export function positionAt(e, elapsed) {
   const P = e.A.pts;
   const t0 = P[e.i0].t, target = t0 + elapsed;
-  if (target >= P[e.i1].t) { const p = P[e.i1]; return { la: p.la, lo: p.lo, v: p.v, g: 0, over: p.over, done: true, prog: p.dist - P[e.i0].dist }; }
+  if (target >= P[e.i1].t) { const p = P[e.i1]; return { la: p.la, lo: p.lo, v: p.v, g: 0, over: p.over, limit: p.limit, i: e.i1, done: true, prog: p.dist - P[e.i0].dist }; }
   let lo = e.i0, hi = e.i1;
   while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (P[mid].t <= target) lo = mid; else hi = mid; }
   const a = P[lo], b = P[hi];
   const f = b.t > a.t ? (target - a.t) / (b.t - a.t) : 0;
   return {
     la: a.la + f * (b.la - a.la), lo: a.lo + f * (b.lo - a.lo),
-    v: a.v + f * (b.v - a.v), g: a.a + f * (b.a - a.a), over: a.over, done: false,
+    v: a.v + f * (b.v - a.v), g: a.a + f * (b.a - a.a), over: a.over, limit: a.limit, i: lo, done: false,
     prog: a.dist + f * (b.dist - a.dist) - P[e.i0].dist,
   };
+}
+
+// Seconds into an entry's run when it had covered `d` metres of the stretch.
+export function timeAtProg(e, d) {
+  const P = e.A.pts, base = P[e.i0].dist;
+  let lo = e.i0, hi = e.i1;
+  if (d <= 0) return 0;
+  if (P[hi].dist - base <= d) return P[hi].t - P[e.i0].t;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (P[mid].dist - base <= d) lo = mid; else hi = mid; }
+  const a = P[lo], b = P[hi], f = b.dist > a.dist ? (d - (a.dist - base)) / (b.dist - a.dist) : 0;
+  return a.t + f * (b.t - a.t) - P[e.i0].t;
 }
